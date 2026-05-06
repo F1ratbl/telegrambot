@@ -44,8 +44,11 @@ def main() -> int:
         json=payload,
         timeout=settings.request_timeout_seconds,
     )
-    response.raise_for_status()
-    print(response.json())
+    data = response.json()
+    if not response.ok or not data.get("ok"):
+        print(data, file=sys.stderr)
+        return 1
+    print(data)
     return 0
 
 
