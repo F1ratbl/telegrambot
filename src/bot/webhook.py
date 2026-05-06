@@ -21,6 +21,7 @@ def create_telegram_blueprint(
     blueprint = Blueprint("telegram", __name__)
 
     @blueprint.get("/telegram/webhook")
+    @blueprint.get("/webhook")
     def webhook_info() -> tuple[dict[str, object], int]:
         return (
             {
@@ -33,6 +34,7 @@ def create_telegram_blueprint(
         )
 
     @blueprint.post("/telegram/webhook")
+    @blueprint.post("/webhook")
     def telegram_webhook() -> tuple[dict[str, object], int]:
         if settings.telegram_webhook_secret:
             secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
