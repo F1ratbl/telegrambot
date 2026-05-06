@@ -1,0 +1,7 @@
+Flask>=3.0,<4
+google-genai>=1.0,<2
+qdrant-client>=1.12,<2
+requests>=2.32,<3
+python-dotenv>=1.0,<2
+gunicorn>=22,<24
+pytest>=8.0,<9
