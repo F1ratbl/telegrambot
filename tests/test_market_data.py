@@ -1,4 +1,4 @@
-from src.tools.market_data import calculate_change, normalize_symbol
+from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
 from src.bot.telegram import _sanitize_telegram_text
 from src.bot.memory import InMemoryConversationMemory
 from src.ai.agent import EconomyAgent
@@ -45,3 +45,15 @@ def test_memory_stores_name_only_when_explicitly_provided() -> None:
     assert memory.get_preferred_name("1") is None
     agent._remember_user_name("1", "benim adim firat")
     assert memory.get_preferred_name("1") == "Firat"
+
+
+def test_gold_snapshot_builds_try_and_gram_estimates() -> None:
+    client = MarketDataClient(Settings())
+    quotes = [
+        MarketQuote("ALTIN", "GC=F", "Gold Futures", 3100.0, 3000.0, 100.0, 3.33, "USD", None, None, None),
+        MarketQuote("USDTRY", "USDTRY=X", "USD/TRY", 38.5, 38.0, 0.5, 1.31, "TRY", None, None, None),
+    ]
+    derived = client._build_derived_metrics(quotes, ["ALTIN"])
+    assert derived["gold_ounce_usd"] == 3100.0
+    assert derived["usdtry"] == 38.5
+    assert derived["gold_gram_try_estimate"] > 0

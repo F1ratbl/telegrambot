@@ -100,12 +100,16 @@ class MarketDataClient:
     def get_snapshot(self, symbols: Iterable[str] | None = None) -> dict[str, Any]:
         requested = _clean_symbols(symbols) or list(self.settings.market_default_symbols)
         requested = requested[:12]
+        expanded = self._expand_requested_symbols(requested)
         quotes: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
+        raw_quotes: list[MarketQuote] = []
 
-        for requested_symbol in requested:
+        for requested_symbol in expanded:
             try:
-                quotes.append(self._fetch_quote(requested_symbol).to_dict())
+                quote = self._fetch_quote(requested_symbol)
+                raw_quotes.append(quote)
+                quotes.append(quote.to_dict())
             except Exception as exc:
                 logger.warning("Could not fetch market quote for %s: %s", requested_symbol, exc)
                 errors.append({"symbol": requested_symbol, "message": str(exc)})
@@ -116,8 +120,44 @@ class MarketDataClient:
             "provider": "Yahoo Finance chart endpoint",
             "note": "Data can be delayed or unavailable depending on exchange and provider coverage.",
             "quotes": quotes,
+            "derived_metrics": self._build_derived_metrics(raw_quotes, requested),
             "errors": errors,
         }
+
+    def _expand_requested_symbols(self, requested: list[str]) -> list[str]:
+        expanded = list(requested)
+        normalized = {normalize_symbol(symbol) for symbol in requested}
+        if "GC=F" in normalized and "USDTRY=X" not in normalized:
+            expanded.append("USDTRY")
+        return expanded
+
+    def _build_derived_metrics(
+        self,
+        quotes: list[MarketQuote],
+        requested: list[str],
+    ) -> dict[str, Any]:
+        derived: dict[str, Any] = {}
+        by_symbol = {quote.symbol: quote for quote in quotes}
+        normalized_requested = {normalize_symbol(symbol) for symbol in requested}
+
+        gold_quote = by_symbol.get("GC=F")
+        usdtry_quote = by_symbol.get("USDTRY=X")
+        if gold_quote and gold_quote.price is not None:
+            derived["gold_ounce_usd"] = round(gold_quote.price, 4)
+            if "GC=F" in normalized_requested or any(
+                symbol in normalized_requested for symbol in {"USDTRY=X", "EURTRY=X"}
+            ):
+                ounce_grams = 31.1035
+                derived["gold_gram_usd_estimate"] = round(gold_quote.price / ounce_grams, 4)
+                if usdtry_quote and usdtry_quote.price is not None:
+                    derived["gold_ounce_try_estimate"] = round(gold_quote.price * usdtry_quote.price, 4)
+                    derived["gold_gram_try_estimate"] = round(
+                        (gold_quote.price / ounce_grams) * usdtry_quote.price,
+                        4,
+                    )
+                    derived["usdtry"] = round(usdtry_quote.price, 4)
+
+        return derived
 
     def _fetch_quote(self, requested_symbol: str) -> MarketQuote:
         import requests

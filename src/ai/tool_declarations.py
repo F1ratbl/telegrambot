@@ -6,7 +6,8 @@ MARKET_TOOL_DECLARATION = {
         "levels, daily moves, index performance, exchange rates, gold, oil, or BTC. "
         "Accepted aliases include BIST100, SP500, NASDAQ, DOWJONES, DAX, FTSE100, "
         "NIKKEI, VIX, USDTRY, EURTRY, EURUSD, GOLD, BRENT, BTCUSD. If symbols is "
-        "empty, a default economy dashboard is returned."
+        "empty, a default economy dashboard is returned. For gold requests, the tool "
+        "may also include derived metrics such as estimated gram/TL and ounce/TL."
     ),
     "parameters": {
         "type": "object",
