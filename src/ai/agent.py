@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,6 +15,10 @@ from src.tools.market_data import MarketDataClient
 
 
 logger = logging.getLogger(__name__)
+
+
+class GeminiTemporarilyUnavailableError(RuntimeError):
+    pass
 
 
 class EconomyAgent:
@@ -41,6 +46,11 @@ class EconomyAgent:
 
         try:
             return self._reply_with_gemini(user_message.strip(), chat_id, user_name)
+        except GeminiTemporarilyUnavailableError:
+            return (
+                "Gemini su an yogun gorunuyor. Bir kac saniye sonra ayni soruyu tekrar "
+                "gonderirseniz devam edebilirim."
+            )
         except Exception:
             logger.exception("Gemini agent failed.")
             return (
@@ -59,7 +69,7 @@ class EconomyAgent:
         contents = self._build_contents(types, user_message, chat_id, user_name)
 
         for _ in range(self.settings.gemini_max_tool_rounds):
-            response = self._client.models.generate_content(
+            response = self._generate_content_with_retry(
                 model=self.settings.gemini_model,
                 contents=contents,
                 config=config,
@@ -77,7 +87,7 @@ class EconomyAgent:
                 response_parts.append(self._function_response_part(types, function_call, tool_result))
             contents.append(types.Content(role="user", parts=response_parts))
 
-        final_response = self._client.models.generate_content(
+        final_response = self._generate_content_with_retry(
             model=self.settings.gemini_model,
             contents=contents,
             config=self._build_config(types, include_tools=False),
@@ -85,6 +95,58 @@ class EconomyAgent:
         answer = self._extract_text(final_response)
         self.memory.remember_exchange(chat_id, user_message, answer)
         return answer
+
+    def _generate_content_with_retry(self, model: str, contents: list[Any], config: Any) -> Any:
+        attempts = max(1, self.settings.gemini_retry_attempts)
+        last_exception: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                last_exception = exc
+                if not self._is_retryable_gemini_error(exc) or attempt >= attempts:
+                    break
+                delay = self._retry_delay_seconds(attempt)
+                logger.warning(
+                    "Gemini temporary failure on attempt %s/%s, retrying in %.2fs: %s",
+                    attempt,
+                    attempts,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
+
+        if last_exception and self._is_retryable_gemini_error(last_exception):
+            raise GeminiTemporarilyUnavailableError(str(last_exception)) from last_exception
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("Gemini generate_content returned without a response or exception.")
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        base_delay = max(0.1, self.settings.gemini_retry_base_delay_seconds)
+        return base_delay * (2 ** (attempt - 1))
+
+    def _is_retryable_gemini_error(self, exc: Exception) -> bool:
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int) and status_code in {429, 500, 503, 504}:
+            return True
+
+        message = str(exc).upper()
+        retry_markers = [
+            "503",
+            "UNAVAILABLE",
+            "HIGH DEMAND",
+            "429",
+            "RESOURCE_EXHAUSTED",
+            "TIMEOUT",
+            "INTERNAL",
+        ]
+        return any(marker in message for marker in retry_markers)
 
     def _build_config(self, types: Any, include_tools: bool) -> Any:
         kwargs: dict[str, Any] = {

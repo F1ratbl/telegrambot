@@ -74,6 +74,8 @@ class Settings:
     gemini_max_output_tokens: int = 1200
     gemini_max_tool_rounds: int = 4
     gemini_thinking_level: str | None = None
+    gemini_retry_attempts: int = 3
+    gemini_retry_base_delay_seconds: float = 1.5
 
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
@@ -103,6 +105,8 @@ class Settings:
             gemini_max_output_tokens=_int(env, "GEMINI_MAX_OUTPUT_TOKENS", 1200),
             gemini_max_tool_rounds=_int(env, "GEMINI_MAX_TOOL_ROUNDS", 4),
             gemini_thinking_level=_optional(env.get("GEMINI_THINKING_LEVEL")),
+            gemini_retry_attempts=_int(env, "GEMINI_RETRY_ATTEMPTS", 3),
+            gemini_retry_base_delay_seconds=_float(env, "GEMINI_RETRY_BASE_DELAY_SECONDS", 1.5),
             embedding_model=_optional(env.get("EMBEDDING_MODEL")) or "gemini-embedding-001",
             embedding_dimensions=_int(env, "EMBEDDING_DIMENSIONS", 768),
             qdrant_url=_optional(env.get("QDRANT_URL")),
