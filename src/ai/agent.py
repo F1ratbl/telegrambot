@@ -202,6 +202,7 @@ class EconomyAgent:
             lines.append(f"Kullanici ad tercihi: {user_name}")
         else:
             lines.append("Kullanici ad tercihi: bilinmiyor")
+        lines.append(f"Birincil cevap tercihi: {self._response_preference_hint(user_message)}")
         lines.append(f"Kullanici mesaji: {user_message}")
         return "\n".join(lines)
 
@@ -230,6 +231,40 @@ class EconomyAgent:
         if not clean:
             return clean
         return clean[:1].upper() + clean[1:].lower()
+
+    def _response_preference_hint(self, user_message: str) -> str:
+        lowered = user_message.lower()
+        if any(token in lowered for token in ["ons", "ounce", "xauusd"]):
+            return "Sadece ons/ounce odakli cevap ver. Kullanici ekstra istemedikce gram veya baska birim ekleme."
+        if "gram" in lowered:
+            return "Sadece gram odakli cevap ver. Kullanici ekstra istemedikce ons veya baska birim ekleme."
+        if any(token in lowered for token in ["tl", "try", "lira"]):
+            return "Sonucu once TL cinsinden ver."
+        if any(token in lowered for token in ["usd", "dolar", "dollar"]):
+            return "Sonucu once USD cinsinden ver."
+        if self._looks_turkish(user_message):
+            return "Kullanici Turkce yaziyor. Ozellikle baska bir sey istemedikce yerel fiyat tercihi TL ve altinda varsayilan format gram/TL."
+        return "Kullanici Ingilizce veya Turkce disi yaziyor. Ozellikle baska bir sey istemedikce fiyat tercihi USD."
+
+    def _looks_turkish(self, text: str) -> bool:
+        lowered = text.lower()
+        turkish_markers = [
+            "altin",
+            "fiyat",
+            "kadar",
+            "gram",
+            "ons",
+            "tl",
+            "lira",
+            "ne",
+            "bugun",
+            "su an",
+            "kaç",
+            "guncel",
+        ]
+        turkish_chars = any(char in lowered for char in "çğıöşü")
+        marker_match = sum(1 for marker in turkish_markers if marker in lowered)
+        return turkish_chars or marker_match >= 2
 
     def _extract_function_calls(self, response: Any) -> list[Any]:
         calls = getattr(response, "function_calls", None)
