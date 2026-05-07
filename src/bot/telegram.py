@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from src.config import Settings
@@ -25,7 +26,7 @@ class TelegramClient:
             logger.warning("TELEGRAM_BOT_TOKEN is not configured; skipping Telegram send.")
             return
 
-        chunks = list(_split_telegram_text(text))
+        chunks = list(_split_telegram_text(_sanitize_telegram_text(text)))
         for index, chunk in enumerate(chunks):
             payload: dict[str, Any] = {
                 "chat_id": chat_id,
@@ -71,3 +72,14 @@ def _split_telegram_text(text: str, limit: int = 3900) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def _sanitize_telegram_text(text: str) -> str:
+    clean = (text or "").strip()
+    if not clean:
+        return "Cevap olusturamadim."
+
+    clean = clean.replace("**", "")
+    clean = re.sub(r"(?m)^\s*[*-]\s+", "", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
+    return clean.strip()

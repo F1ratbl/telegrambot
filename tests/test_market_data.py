@@ -1,4 +1,5 @@
 from src.tools.market_data import calculate_change, normalize_symbol
+from src.bot.telegram import _sanitize_telegram_text
 
 
 def test_normalize_symbol_aliases() -> None:
@@ -15,3 +16,15 @@ def test_calculate_change() -> None:
 
 def test_calculate_change_without_previous_close() -> None:
     assert calculate_change(110, None) == (None, None)
+
+
+def test_sanitize_telegram_text_removes_markdown_stars() -> None:
+    text = """
+    Guncel veriler:
+    * Altin **4695,30 USD**.
+    * Dolar/TL **45,21**.
+    """
+    sanitized = _sanitize_telegram_text(text)
+    assert "**" not in sanitized
+    assert "* " not in sanitized
+    assert "Altin 4695,30 USD." in sanitized
