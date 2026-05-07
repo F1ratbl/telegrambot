@@ -1,7 +1,7 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
 from src.bot.telegram import _sanitize_telegram_text
 from src.bot.memory import InMemoryConversationMemory
-from src.ai.agent import EconomyAgent
+from src.ai.agent import EconomyAgent, START_MESSAGE
 from src.config import Settings
 
 
@@ -71,3 +71,9 @@ def test_short_kilo_followup_infers_gold_context_from_memory() -> None:
     memory.remember_exchange("chat-1", "altin gram fiyatı nedir", "Altin gram fiyatı su an ...")
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
     assert agent._infer_active_asset("chat-1", "kilosu") == "altin"
+
+
+def test_start_message_is_handled_without_gemini() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent.reply("/start", chat_id="chat-1") == START_MESSAGE

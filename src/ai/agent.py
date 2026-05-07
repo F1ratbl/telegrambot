@@ -18,6 +18,12 @@ from src.tools.market_data import MarketDataClient
 logger = logging.getLogger(__name__)
 
 
+START_MESSAGE = (
+    "Merhaba! Ben ekonomi ve finans alaninda size yardimci olmak icin buradayim. "
+    "Piyasalar, yatirimlar veya ekonomiyle ilgili bir sorunuz varsa yazabilirsiniz."
+)
+
+
 class GeminiTemporarilyUnavailableError(RuntimeError):
     pass
 
@@ -39,6 +45,8 @@ class EconomyAgent:
     def reply(self, user_message: str, chat_id: str | None = None, user_name: str | None = None) -> str:
         if not user_message.strip():
             return "Ekonomiyle ilgili sorunuzu yazarsaniz yardimci olayim."
+        if user_message.strip().lower() == "/start":
+            return START_MESSAGE
         if not self.settings.google_api_key:
             return (
                 "Gemini API anahtari henuz tanimli degil. GOOGLE_API_KEY veya "
