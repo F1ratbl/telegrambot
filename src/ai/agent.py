@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import time
 from datetime import datetime
@@ -77,8 +78,33 @@ class EconomyAgent:
         if self._client is None:
             self._client = genai.Client(api_key=self.settings.google_api_key)
 
-        config = self._build_config(types, include_tools=True)
         contents = self._build_contents(types, user_message, chat_id, user_name)
+        prefetched_market = self._prefetch_market_snapshot(user_message, chat_id)
+        if prefetched_market is not None:
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            text=(
+                                "Guncel market araci sonucu asagida. Kullanici anlik fiyat sordugu icin "
+                                "cevabini bu veri uzerinden kur ve bu veriyle celisen bir fiyat uydurma.\n"
+                                f"{json.dumps(prefetched_market, ensure_ascii=False)}"
+                            )
+                        )
+                    ],
+                )
+            )
+            final_response = self._generate_content_with_retry(
+                model=self.settings.gemini_model,
+                contents=contents,
+                config=self._build_config(types, include_tools=False),
+            )
+            answer = self._extract_text(final_response)
+            self.memory.remember_exchange(chat_id, user_message, answer)
+            return answer
+
+        config = self._build_config(types, include_tools=True)
 
         for _ in range(self.settings.gemini_max_tool_rounds):
             response = self._generate_content_with_retry(
@@ -247,6 +273,12 @@ class EconomyAgent:
         lowered = user_message.lower()
         if self._is_short_followup_message(lowered):
             return "Bu mesaj onceki sorunun kisa bir devami olabilir. Onceki varlik baglamini koru ve kullanicinin istedigi birim veya olcuye gore cevap ver."
+        if any(token in lowered for token in ["ons", "ounce"]):
+            return "Kullanici ons odakli soruyor. Ozellikle baska bir para birimi istemedikce ons fiyatini USD cinsinden ver."
+        if any(token in lowered for token in ["gram", "kilo", "kilosu", "kg", "kilogram"]):
+            return "Kullanici gram veya kilogram odakli soruyor. Ozellikle baska bir para birimi istemedikce yerel fiyatlari TL cinsinden ver."
+        if any(token in lowered for token in ["varil", "ton", "tonu"]):
+            return "Kullanici emtia birimi soruyor. Ozellikle baska bir para birimi istemedikce ilgili uluslararasi fiyat birimiyle cevap ver."
         if any(token in lowered for token in ["tl", "try", "lira"]):
             return "Sonucu once TL cinsinden ver."
         if any(token in lowered for token in ["usd", "dolar", "dollar"]):
@@ -254,6 +286,88 @@ class EconomyAgent:
         if self._looks_turkish(user_message):
             return "Kullanici Turkce yaziyor. Ozellikle baska bir sey istemedikce yerel fiyat tercihi TL ve altinda varsayilan format gram/TL."
         return "Kullanici Ingilizce veya Turkce disi yaziyor. Ozellikle baska bir sey istemedikce fiyat tercihi USD."
+
+    def _prefetch_market_snapshot(self, user_message: str, chat_id: str | None) -> dict[str, Any] | None:
+        symbols = self._extract_prefetch_symbols(user_message, chat_id)
+        if not symbols:
+            return None
+        result = self.market_data.get_snapshot(symbols=symbols)
+        if result.get("status") != "ok" or not result.get("quotes"):
+            return None
+        return result
+
+    def _extract_prefetch_symbols(self, user_message: str, chat_id: str | None) -> list[str]:
+        lowered = user_message.lower()
+        active_asset = self._infer_active_asset(chat_id, user_message)
+        symbols: list[str] = []
+
+        if self._mentions_any(lowered, ["dolar/tl", "usdtry", "usd/try", "dolar kaç tl", "dolar kac tl"]):
+            symbols.append("USDTRY")
+        elif "dolar" in lowered and self._mentions_any(lowered, ["tl", "try", "lira"]):
+            symbols.append("USDTRY")
+
+        if self._mentions_any(lowered, ["euro/tl", "eurtry", "eur/tl", "euro kaç tl", "euro kac tl"]):
+            symbols.append("EURTRY")
+        elif "euro" in lowered and self._mentions_any(lowered, ["tl", "try", "lira"]):
+            symbols.append("EURTRY")
+
+        if self._mentions_any(lowered, ["altın", "altin", "gold", "xau"]) or active_asset == "altin":
+            symbols.append("GOLD")
+        if self._mentions_any(lowered, ["gümüş", "gumus", "silver", "xag"]) or active_asset == "gumus":
+            symbols.append("SILVER")
+        if self._mentions_any(lowered, ["brent", "petrol", "varil", "oil"]) or active_asset == "petrol":
+            symbols.append("BRENT")
+        if self._mentions_any(lowered, ["wti"]):
+            symbols.append("WTI")
+        if self._mentions_any(lowered, ["bitcoin", "btc"]) or active_asset == "bitcoin":
+            symbols.append("BTCUSD")
+        if self._mentions_any(lowered, ["ethereum", "eth"]) or active_asset == "ethereum":
+            symbols.append("ETHUSD")
+        if self._mentions_any(lowered, ["nasdaq"]):
+            symbols.append("NASDAQ")
+        if self._mentions_any(lowered, ["s&p", "sp500", "s&p 500"]):
+            symbols.append("SP500")
+        if self._mentions_any(lowered, ["bist", "xu100", "bist100"]):
+            symbols.append("BIST100")
+
+        if not symbols:
+            return []
+
+        price_markers = [
+            "fiyat",
+            "kaç",
+            "kac",
+            "ne kadar",
+            "kaç tl",
+            "kac tl",
+            "kaç dolar",
+            "kac dolar",
+            "kaç usd",
+            "kac usd",
+            "anlık",
+            "anlik",
+            "güncel",
+            "guncel",
+            "kaç lira",
+            "kac lira",
+            "kaç euro",
+            "kac euro",
+            "gram",
+            "ons",
+            "ounce",
+            "kilo",
+            "kilosu",
+            "kg",
+            "varil",
+            "tonu",
+            "ton",
+        ]
+        if not any(marker in lowered for marker in price_markers) and len(lowered.split()) > 3:
+            return []
+        return list(dict.fromkeys(symbols))
+
+    def _mentions_any(self, text: str, options: list[str]) -> bool:
+        return any(option in text for option in options)
 
     def _looks_turkish(self, text: str) -> bool:
         lowered = text.lower()
@@ -318,6 +432,7 @@ class EconomyAgent:
         asset_aliases = [
             ("altin", ["altin", "gold", "xau", "ons altin", "gram altin"]),
             ("gumus", ["gumus", "silver", "xag"]),
+            ("petrol", ["petrol", "brent", "wti", "oil"]),
             ("bitcoin", ["bitcoin", "btc"]),
             ("ethereum", ["ethereum", "eth"]),
             ("bist100", ["bist", "bist100", "xu100"]),

@@ -40,6 +40,9 @@ SYMBOL_ALIASES = {
     "GOLD": "GC=F",
     "ALTIN": "GC=F",
     "XAUUSD": "GC=F",
+    "SILVER": "SI=F",
+    "GUMUS": "SI=F",
+    "XAGUSD": "SI=F",
     "BRENT": "BZ=F",
     "PETROL": "BZ=F",
     "WTI": "CL=F",
@@ -66,6 +69,7 @@ DISPLAY_NAMES = {
     "EURTRY=X": "EUR/TRY",
     "EURUSD=X": "EUR/USD",
     "GC=F": "Gold Futures",
+    "SI=F": "Silver Futures",
     "BZ=F": "Brent Oil",
     "CL=F": "WTI Oil",
     "BTC-USD": "Bitcoin",
@@ -92,6 +96,7 @@ class MarketQuote:
 
 
 class MarketDataClient:
+    yahoo_quote_url = "https://query1.finance.yahoo.com/v7/finance/quote"
     yahoo_chart_url = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
     def __init__(self, settings: Settings) -> None:
@@ -117,8 +122,12 @@ class MarketDataClient:
         status = "ok" if quotes else "error"
         return {
             "status": status,
-            "provider": "Yahoo Finance chart endpoint",
-            "note": "Data can be delayed or unavailable depending on exchange and provider coverage.",
+            "provider": "Yahoo Finance quote endpoint with chart fallback",
+            "note": (
+                "Latest available quote data is fetched from Yahoo Finance. "
+                "Some markets can still be delayed depending on provider and exchange coverage."
+            ),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
             "quotes": quotes,
             "derived_metrics": self._build_derived_metrics(raw_quotes, requested),
             "errors": errors,
@@ -163,6 +172,67 @@ class MarketDataClient:
         import requests
 
         symbol = normalize_symbol(requested_symbol)
+        quote = self._fetch_quote_from_quote_endpoint(symbol, requested_symbol)
+        if quote is not None:
+            return quote
+        return self._fetch_quote_from_chart_endpoint(symbol, requested_symbol)
+
+    def _fetch_quote_from_quote_endpoint(
+        self,
+        symbol: str,
+        requested_symbol: str,
+    ) -> MarketQuote | None:
+        import requests
+
+        response = requests.get(
+            self.yahoo_quote_url,
+            params={"symbols": symbol},
+            headers={"User-Agent": "telegram-economy-ai/1.0"},
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        quote_response = payload.get("quoteResponse") or {}
+        results = quote_response.get("result") or []
+        if not results:
+            return None
+
+        result = results[0]
+        price = _first_number(
+            result.get("regularMarketPrice"),
+            result.get("postMarketPrice"),
+            result.get("preMarketPrice"),
+            result.get("bid"),
+            result.get("ask"),
+        )
+        previous_close = _first_number(
+            result.get("regularMarketPreviousClose"),
+            result.get("previousClose"),
+        )
+        change, change_percent = calculate_change(price, previous_close)
+        market_time = _timestamp_to_iso(result.get("regularMarketTime"))
+
+        return MarketQuote(
+            requested_symbol=requested_symbol,
+            symbol=symbol,
+            name=DISPLAY_NAMES.get(symbol, result.get("shortName") or symbol),
+            price=price,
+            previous_close=previous_close,
+            change=change,
+            change_percent=change_percent,
+            currency=result.get("currency"),
+            exchange=result.get("fullExchangeName") or result.get("exchange"),
+            market_time=market_time,
+            timezone=result.get("exchangeTimezoneName"),
+        )
+
+    def _fetch_quote_from_chart_endpoint(
+        self,
+        symbol: str,
+        requested_symbol: str,
+    ) -> MarketQuote:
+        import requests
+
         url = self.yahoo_chart_url.format(symbol=symbol)
         response = requests.get(
             url,

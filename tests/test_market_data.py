@@ -77,3 +77,16 @@ def test_start_message_is_handled_without_gemini() -> None:
     memory = InMemoryConversationMemory()
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
     assert agent.reply("/start", chat_id="chat-1") == START_MESSAGE
+
+
+def test_prefetch_symbols_detects_usdtry_question() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent._extract_prefetch_symbols("dolar kaç tl", "chat-1") == ["USDTRY"]
+
+
+def test_prefetch_symbols_uses_active_asset_for_short_followup() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "altin gram fiyati nedir", "Altin gram fiyati...")
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent._extract_prefetch_symbols("ons", "chat-1") == ["GOLD"]
