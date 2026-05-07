@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -45,7 +46,10 @@ class EconomyAgent:
             )
 
         try:
-            return self._reply_with_gemini(user_message.strip(), chat_id, user_name)
+            clean_message = user_message.strip()
+            remembered_name = self._remember_user_name(chat_id, clean_message)
+            active_name = remembered_name or self.memory.get_preferred_name(chat_id)
+            return self._reply_with_gemini(clean_message, chat_id, active_name)
         except GeminiTemporarilyUnavailableError:
             return (
                 "Gemini su an yogun gorunuyor. Bir kac saniye sonra ayni soruyu tekrar "
@@ -193,12 +197,39 @@ class EconomyAgent:
         except ZoneInfoNotFoundError:
             now = datetime.utcnow()
         timestamp = now.strftime("%Y-%m-%d %H:%M %Z").strip()
-        display_name = user_name or "bilinmiyor"
-        return (
-            f"Telegram kullanicisi: {display_name}\n"
-            f"Tarih/saat: {timestamp}\n"
-            f"Kullanici mesaji: {user_message}"
-        )
+        lines = [f"Tarih/saat: {timestamp}"]
+        if user_name:
+            lines.append(f"Kullanici ad tercihi: {user_name}")
+        else:
+            lines.append("Kullanici ad tercihi: bilinmiyor")
+        lines.append(f"Kullanici mesaji: {user_message}")
+        return "\n".join(lines)
+
+    def _remember_user_name(self, chat_id: str | None, user_message: str) -> str | None:
+        detected_name = self._extract_explicit_name(user_message)
+        if detected_name:
+            self.memory.set_preferred_name(chat_id, detected_name)
+        return detected_name
+
+    def _extract_explicit_name(self, text: str) -> str | None:
+        patterns = [
+            r"\bbenim adim\s+([A-Za-zCÇGĞIİÖŞUÜçğıöşü]{2,24})\b",
+            r"\badim\s+([A-Za-zCÇGĞIİÖŞUÜçğıöşü]{2,24})\b",
+            r"\bismim\s+([A-Za-zCÇGĞIİÖŞUÜçğıöşü]{2,24})\b",
+            r"\bbana\s+([A-Za-zCÇGĞIİÖŞUÜçğıöşü]{2,24})\s+de\b",
+            r"\bbana\s+([A-Za-zCÇGĞIİÖŞUÜçğıöşü]{2,24})\s+diyebilirsin\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return self._normalize_name(match.group(1))
+        return None
+
+    def _normalize_name(self, name: str) -> str:
+        clean = name.strip(" .,!?:;")
+        if not clean:
+            return clean
+        return clean[:1].upper() + clean[1:].lower()
 
     def _extract_function_calls(self, response: Any) -> list[Any]:
         calls = getattr(response, "function_calls", None)

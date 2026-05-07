@@ -70,12 +70,9 @@ def _handle_update(
     if not isinstance(text, str) or not text.strip():
         return False
 
-    from_user = message.get("from") or {}
-    user_name = from_user.get("first_name") or from_user.get("username")
     reply = agent.reply(
         user_message=text,
         chat_id=str(chat_id),
-        user_name=user_name,
     )
     telegram.send_message(
         chat_id=chat_id,
