@@ -57,3 +57,10 @@ def test_gold_snapshot_builds_try_and_gram_estimates() -> None:
     assert derived["gold_ounce_usd"] == 3100.0
     assert derived["usdtry"] == 38.5
     assert derived["gold_gram_try_estimate"] > 0
+
+
+def test_short_followup_infers_gold_context_from_memory() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "altin fiyatı ne kadar", "Altin su an ...")
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent._infer_active_asset("chat-1", "gram") == "altin"

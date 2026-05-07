@@ -186,22 +186,25 @@ class EconomyAgent:
         contents.append(
             types.Content(
                 role="user",
-                parts=[types.Part(text=self._current_turn_text(user_message, user_name))],
+                parts=[types.Part(text=self._current_turn_text(user_message, chat_id, user_name))],
             )
         )
         return contents
 
-    def _current_turn_text(self, user_message: str, user_name: str | None) -> str:
+    def _current_turn_text(self, user_message: str, chat_id: str | None, user_name: str | None) -> str:
         try:
             now = datetime.now(ZoneInfo(self.settings.timezone))
         except ZoneInfoNotFoundError:
             now = datetime.utcnow()
         timestamp = now.strftime("%Y-%m-%d %H:%M %Z").strip()
+        active_asset = self._infer_active_asset(chat_id, user_message)
         lines = [f"Tarih/saat: {timestamp}"]
         if user_name:
             lines.append(f"Kullanici ad tercihi: {user_name}")
         else:
             lines.append("Kullanici ad tercihi: bilinmiyor")
+        if active_asset:
+            lines.append(f"Aktif varlik baglami: {active_asset}")
         lines.append(f"Birincil cevap tercihi: {self._response_preference_hint(user_message)}")
         lines.append(f"Kullanici mesaji: {user_message}")
         return "\n".join(lines)
@@ -265,6 +268,40 @@ class EconomyAgent:
         turkish_chars = any(char in lowered for char in "çğıöşü")
         marker_match = sum(1 for marker in turkish_markers if marker in lowered)
         return turkish_chars or marker_match >= 2
+
+    def _infer_active_asset(self, chat_id: str | None, user_message: str) -> str | None:
+        current_asset = self._extract_asset_label(user_message)
+        if current_asset:
+            return current_asset
+
+        lowered = user_message.lower().strip()
+        if lowered not in {"gram", "ons", "ounce", "tl", "try", "usd", "dolar", "lira"}:
+            return None
+
+        for message in reversed(self.memory.snapshot(chat_id)):
+            if message.text:
+                asset = self._extract_asset_label(message.text)
+                if asset:
+                    return asset
+        return None
+
+    def _extract_asset_label(self, text: str) -> str | None:
+        lowered = text.lower()
+        asset_aliases = [
+            ("altin", ["altin", "gold", "xau", "ons altin", "gram altin"]),
+            ("gumus", ["gumus", "silver", "xag"]),
+            ("bitcoin", ["bitcoin", "btc"]),
+            ("ethereum", ["ethereum", "eth"]),
+            ("bist100", ["bist", "bist100", "xu100"]),
+            ("nasdaq", ["nasdaq"]),
+            ("sp500", ["s&p", "sp500", "s&p 500"]),
+            ("usdtry", ["usdtry", "dolar", "dolar/tl"]),
+            ("eurtry", ["eurtry", "euro", "eur/tl"]),
+        ]
+        for label, aliases in asset_aliases:
+            if any(alias in lowered for alias in aliases):
+                return label
+        return None
 
     def _extract_function_calls(self, response: Any) -> list[Any]:
         calls = getattr(response, "function_calls", None)
