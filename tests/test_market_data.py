@@ -64,3 +64,10 @@ def test_short_followup_infers_gold_context_from_memory() -> None:
     memory.remember_exchange("chat-1", "altin fiyatı ne kadar", "Altin su an ...")
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
     assert agent._infer_active_asset("chat-1", "gram") == "altin"
+
+
+def test_short_kilo_followup_infers_gold_context_from_memory() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "altin gram fiyatı nedir", "Altin gram fiyatı su an ...")
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent._infer_active_asset("chat-1", "kilosu") == "altin"

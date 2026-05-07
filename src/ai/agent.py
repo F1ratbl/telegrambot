@@ -237,10 +237,8 @@ class EconomyAgent:
 
     def _response_preference_hint(self, user_message: str) -> str:
         lowered = user_message.lower()
-        if any(token in lowered for token in ["ons", "ounce", "xauusd"]):
-            return "Sadece ons/ounce odakli cevap ver. Kullanici ekstra istemedikce gram veya baska birim ekleme."
-        if "gram" in lowered:
-            return "Sadece gram odakli cevap ver. Kullanici ekstra istemedikce ons veya baska birim ekleme."
+        if self._is_short_followup_message(lowered):
+            return "Bu mesaj onceki sorunun kisa bir devami olabilir. Onceki varlik baglamini koru ve kullanicinin istedigi birim veya olcuye gore cevap ver."
         if any(token in lowered for token in ["tl", "try", "lira"]):
             return "Sonucu once TL cinsinden ver."
         if any(token in lowered for token in ["usd", "dolar", "dollar"]):
@@ -275,7 +273,7 @@ class EconomyAgent:
             return current_asset
 
         lowered = user_message.lower().strip()
-        if lowered not in {"gram", "ons", "ounce", "tl", "try", "usd", "dolar", "lira"}:
+        if not self._is_short_followup_message(lowered):
             return None
 
         for message in reversed(self.memory.snapshot(chat_id)):
@@ -284,6 +282,28 @@ class EconomyAgent:
                 if asset:
                     return asset
         return None
+
+    def _is_short_followup_message(self, lowered_message: str) -> bool:
+        canonical = lowered_message.strip().replace("?", "")
+        return canonical in {
+            "gram",
+            "ons",
+            "ounce",
+            "tl",
+            "try",
+            "usd",
+            "dolar",
+            "lira",
+            "kilo",
+            "kilosu",
+            "kg",
+            "kilogram",
+            "varil",
+            "tonu",
+            "ton",
+            "adet",
+            "lot",
+        }
 
     def _extract_asset_label(self, text: str) -> str | None:
         lowered = text.lower()
