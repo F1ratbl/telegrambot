@@ -90,3 +90,70 @@ def test_prefetch_symbols_uses_active_asset_for_short_followup() -> None:
     memory.remember_exchange("chat-1", "altin gram fiyati nedir", "Altin gram fiyati...")
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
     assert agent._extract_prefetch_symbols("ons", "chat-1") == ["GOLD"]
+
+
+def test_fetch_quote_falls_back_to_chart_when_quote_endpoint_fails() -> None:
+    client = MarketDataClient(Settings())
+
+    def fake_quote(symbol: str, requested_symbol: str) -> MarketQuote | None:
+        raise RuntimeError("401 unauthorized")
+
+    def fake_chart(symbol: str, requested_symbol: str) -> MarketQuote:
+        return MarketQuote(
+            requested_symbol=requested_symbol,
+            symbol=symbol,
+            name="Gold Futures",
+            price=3200.0,
+            previous_close=3150.0,
+            change=50.0,
+            change_percent=1.58,
+            currency="USD",
+            exchange="COMEX",
+            market_time=None,
+            timezone=None,
+        )
+
+    client._fetch_quote_from_quote_endpoint = fake_quote  # type: ignore[method-assign]
+    client._fetch_quote_from_chart_endpoint = fake_chart  # type: ignore[method-assign]
+
+    quote = client._fetch_quote("GOLD")
+    assert quote.symbol == "GC=F"
+    assert quote.price == 3200.0
+
+
+def test_market_snapshot_fallback_answers_gold_try() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    answer = agent._market_snapshot_fallback_answer(
+        "altın kaç tl",
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold Futures",
+                    "price": 3200.0,
+                    "currency": "USD",
+                },
+                {
+                    "symbol": "USDTRY=X",
+                    "name": "USD/TRY",
+                    "price": 40.0,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {
+                "gold_ounce_usd": 3200.0,
+                "gold_gram_try_estimate": 4115.3,
+            },
+        },
+    )
+    assert answer == "Gram altin su an yaklasik 4.115,30 TL seviyesinde."
+
+
+def test_extract_text_returns_fallback_only_for_public_helper() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    response = object()
+    assert agent._extract_text_or_none(response) is None
+    assert agent._extract_text(response) == "Cevap olusturamadim."

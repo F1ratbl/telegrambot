@@ -169,12 +169,17 @@ class MarketDataClient:
         return derived
 
     def _fetch_quote(self, requested_symbol: str) -> MarketQuote:
-        import requests
-
         symbol = normalize_symbol(requested_symbol)
-        quote = self._fetch_quote_from_quote_endpoint(symbol, requested_symbol)
-        if quote is not None:
-            return quote
+        try:
+            quote = self._fetch_quote_from_quote_endpoint(symbol, requested_symbol)
+            if quote is not None:
+                return quote
+        except Exception as exc:
+            logger.info(
+                "Quote endpoint failed for %s, falling back to chart endpoint: %s",
+                symbol,
+                exc,
+            )
         return self._fetch_quote_from_chart_endpoint(symbol, requested_symbol)
 
     def _fetch_quote_from_quote_endpoint(

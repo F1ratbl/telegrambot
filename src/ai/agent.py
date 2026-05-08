@@ -23,6 +23,7 @@ START_MESSAGE = (
     "Merhaba! Ben ekonomi ve finans alaninda size yardimci olmak icin buradayim. "
     "Piyasalar, yatirimlar veya ekonomiyle ilgili bir sorunuz varsa yazabilirsiniz."
 )
+NO_TEXT_FALLBACK = "Cevap olusturamadim."
 
 
 class GeminiTemporarilyUnavailableError(RuntimeError):
@@ -95,12 +96,18 @@ class EconomyAgent:
                     ],
                 )
             )
-            final_response = self._generate_content_with_retry(
-                model=self.settings.gemini_model,
-                contents=contents,
-                config=self._build_config(types, include_tools=False),
-            )
-            answer = self._extract_text(final_response)
+            try:
+                final_response = self._generate_content_with_retry(
+                    model=self.settings.gemini_model,
+                    contents=contents,
+                    config=self._build_config(types, include_tools=False),
+                )
+                answer = self._extract_text_or_none(final_response)
+            except Exception as exc:
+                logger.warning("Gemini failed after market prefetch, using market fallback: %s", exc)
+                answer = None
+            if not answer:
+                answer = self._market_snapshot_fallback_answer(user_message, prefetched_market)
             self.memory.remember_exchange(chat_id, user_message, answer)
             return answer
 
@@ -459,16 +466,78 @@ class EconomyAgent:
         return [part.function_call for part in parts if getattr(part, "function_call", None)]
 
     def _extract_text(self, response: Any) -> str:
+        return self._extract_text_or_none(response) or NO_TEXT_FALLBACK
+
+    def _extract_text_or_none(self, response: Any) -> str | None:
         text = getattr(response, "text", None)
         if text:
             return text.strip()
 
         candidates = getattr(response, "candidates", None) or []
         if not candidates:
-            return "Cevap olusturamadim."
+            return None
         parts = getattr(candidates[0].content, "parts", None) or []
         chunks = [part.text for part in parts if getattr(part, "text", None)]
-        return "\n".join(chunks).strip() or "Cevap olusturamadim."
+        return "\n".join(chunks).strip() or None
+
+    def _market_snapshot_fallback_answer(self, user_message: str, snapshot: dict[str, Any]) -> str:
+        lowered = user_message.lower()
+        derived = snapshot.get("derived_metrics") or {}
+        quotes = snapshot.get("quotes") or []
+
+        if self._mentions_any(lowered, ["altın", "altin", "gold", "xau"]):
+            if self._mentions_any(lowered, ["gram", "tl", "try", "lira", "kaç tl", "kac tl"]):
+                value = _first_numeric_value(derived.get("gold_gram_try_estimate"))
+                if value is not None:
+                    return f"Gram altin su an yaklasik {self._format_number(value)} TL seviyesinde."
+            if self._mentions_any(lowered, ["ons", "ounce", "usd", "dolar"]):
+                value = _first_numeric_value(derived.get("gold_ounce_usd"))
+                if value is not None:
+                    return f"Altinin ons fiyati su an yaklasik {self._format_number(value)} USD seviyesinde."
+            value = _first_numeric_value(derived.get("gold_gram_try_estimate"))
+            if value is not None:
+                return f"Gram altin su an yaklasik {self._format_number(value)} TL seviyesinde."
+
+        if self._mentions_any(lowered, ["dolar", "usdtry", "usd/try", "dolar/tl"]):
+            quote = self._find_quote(snapshot, "USDTRY=X")
+            value = _first_numeric_value((quote or {}).get("price"))
+            if value is not None:
+                return f"Dolar/TL su an yaklasik {self._format_number(value)} seviyesinde."
+
+        if self._mentions_any(lowered, ["euro", "eurtry", "eur/tl", "euro/tl"]):
+            quote = self._find_quote(snapshot, "EURTRY=X")
+            value = _first_numeric_value((quote or {}).get("price"))
+            if value is not None:
+                return f"Euro/TL su an yaklasik {self._format_number(value)} seviyesinde."
+
+        usable_quotes = [quote for quote in quotes if _first_numeric_value(quote.get("price")) is not None]
+        if usable_quotes:
+            quote = usable_quotes[0]
+            value = _first_numeric_value(quote.get("price"))
+            currency = quote.get("currency") or ""
+            name = quote.get("name") or quote.get("symbol") or "Bu varlik"
+            suffix = f" {currency}" if currency else ""
+            return f"{name} su an yaklasik {self._format_number(value)}{suffix} seviyesinde."
+
+        return "Su an piyasa verisine ulasamadim. Biraz sonra tekrar deneyebilir misiniz?"
+
+    def _find_quote(self, snapshot: dict[str, Any], symbol: str) -> dict[str, Any] | None:
+        for quote in snapshot.get("quotes") or []:
+            if quote.get("symbol") == symbol:
+                return quote
+        return None
+
+    def _format_number(self, value: float | int | None) -> str:
+        if value is None:
+            return ""
+        numeric = float(value)
+        if abs(numeric) >= 1000:
+            text = f"{numeric:,.2f}"
+        elif abs(numeric) >= 100:
+            text = f"{numeric:.2f}"
+        else:
+            text = f"{numeric:.4f}".rstrip("0").rstrip(".")
+        return text.replace(",", "X").replace(".", ",").replace("X", ".")
 
     def _execute_tool(self, function_call: Any) -> dict[str, Any]:
         name = getattr(function_call, "name", "")
@@ -499,3 +568,9 @@ class EconomyAgent:
         except TypeError:
             kwargs.pop("id", None)
             return types.Part.from_function_response(**kwargs)
+
+
+def _first_numeric_value(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
