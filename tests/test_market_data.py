@@ -59,6 +59,13 @@ def test_gold_snapshot_builds_try_and_gram_estimates() -> None:
     assert derived["gold_gram_try_estimate"] > 0
 
 
+def test_snapshot_expands_usd_priced_assets_with_usdtry() -> None:
+    client = MarketDataClient(Settings())
+    assert client._expand_requested_symbols(["NASDAQ"]) == ["NASDAQ", "USDTRY"]
+    assert client._expand_requested_symbols(["SP500"]) == ["SP500", "USDTRY"]
+    assert client._expand_requested_symbols(["BIST100"]) == ["BIST100", "USDTRY"]
+
+
 def test_short_followup_infers_gold_context_from_memory() -> None:
     memory = InMemoryConversationMemory()
     memory.remember_exchange("chat-1", "altin fiyatı ne kadar", "Altin su an ...")
@@ -90,6 +97,13 @@ def test_prefetch_symbols_uses_active_asset_for_short_followup() -> None:
     memory.remember_exchange("chat-1", "altin gram fiyati nedir", "Altin gram fiyati...")
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
     assert agent._extract_prefetch_symbols("ons", "chat-1") == ["GOLD"]
+
+
+def test_prefetch_symbols_uses_active_asset_for_try_conversion_followup() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "ons altin ne kadar", "Altinin ons fiyati...")
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent._extract_prefetch_symbols("kaç tl ediyor", "chat-1") == ["GOLD"]
 
 
 def test_fetch_quote_falls_back_to_chart_when_quote_endpoint_fails() -> None:
@@ -179,6 +193,118 @@ def test_market_snapshot_direct_answer_uses_gold_ounce_for_followup() -> None:
         },
     )
     assert answer == "Altinin ons fiyati su an yaklasik 4.718,20 USD seviyesinde."
+
+
+def test_market_snapshot_direct_answer_converts_previous_gold_ounce_to_try() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "ons altin ne kadar", "Altinin ons fiyati...")
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    answer = agent._market_snapshot_direct_answer(
+        "kaç tl ediyor",
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold Futures",
+                    "price": 4718.2,
+                    "currency": "USD",
+                },
+                {
+                    "symbol": "USDTRY=X",
+                    "name": "USD/TRY",
+                    "price": 45.364,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {
+                "gold_ounce_usd": 4718.2,
+                "gold_ounce_try_estimate": 214061.39,
+                "gold_gram_try_estimate": 6881.4257,
+            },
+        },
+        chat_id="chat-1",
+    )
+    assert answer == "Altinin ons fiyati su an yaklasik 214.061,39 TL seviyesinde."
+
+
+def test_market_snapshot_direct_answer_converts_usd_index_to_try() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "nasdaq ne kadar", "Nasdaq Composite...")
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    answer = agent._market_snapshot_direct_answer(
+        "kaç tl ediyor",
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "^IXIC",
+                    "name": "Nasdaq Composite",
+                    "price": 24500.0,
+                    "currency": "USD",
+                },
+                {
+                    "symbol": "USDTRY=X",
+                    "name": "USD/TRY",
+                    "price": 45.0,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {},
+        },
+        chat_id="chat-1",
+    )
+    assert answer == "Nasdaq Composite TL karsiligi su an yaklasik 1.102.500,00 TL seviyesinde."
+
+
+def test_market_snapshot_direct_answer_keeps_bist_in_try() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    answer = agent._market_snapshot_direct_answer(
+        "bist100 kaç tl",
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "XU100.IS",
+                    "name": "BIST 100",
+                    "price": 12000.5,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {},
+        },
+    )
+    assert answer == "BIST 100 TL karsiligi su an yaklasik 12.000,50 TL seviyesinde."
+
+
+def test_market_snapshot_direct_answer_converts_try_index_to_usd() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "bist100 kaç tl", "BIST 100...")
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    answer = agent._market_snapshot_direct_answer(
+        "dolar karşılığı ne",
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "XU100.IS",
+                    "name": "BIST 100",
+                    "price": 12000.0,
+                    "currency": "TRY",
+                },
+                {
+                    "symbol": "USDTRY=X",
+                    "name": "USD/TRY",
+                    "price": 40.0,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {},
+        },
+        chat_id="chat-1",
+    )
+    assert answer == "BIST 100 dolar karsiligi su an yaklasik 300,00 USD seviyesinde."
 
 
 def test_extract_text_returns_fallback_only_for_public_helper() -> None:

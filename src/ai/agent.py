@@ -74,7 +74,7 @@ class EconomyAgent:
     def _reply_with_gemini(self, user_message: str, chat_id: str | None, user_name: str | None) -> str:
         prefetched_market = self._prefetch_market_snapshot(user_message, chat_id)
         if prefetched_market is not None:
-            answer = self._market_snapshot_direct_answer(user_message, prefetched_market)
+            answer = self._market_snapshot_direct_answer(user_message, prefetched_market, chat_id)
             self.memory.remember_exchange(chat_id, user_message, answer)
             return answer
 
@@ -284,7 +284,11 @@ class EconomyAgent:
 
         if self._mentions_any(lowered, ["dolar/tl", "usdtry", "usd/try", "dolar kaç tl", "dolar kac tl"]):
             symbols.append("USDTRY")
-        elif "dolar" in lowered and self._mentions_any(lowered, ["tl", "try", "lira"]):
+        elif (
+            "dolar" in lowered
+            and self._mentions_any(lowered, ["tl", "try", "lira"])
+            and not self._is_context_followup_message(lowered)
+        ):
             symbols.append("USDTRY")
 
         if self._mentions_any(lowered, ["euro/tl", "eurtry", "eur/tl", "euro kaç tl", "euro kac tl"]):
@@ -310,6 +314,8 @@ class EconomyAgent:
             symbols.append("SP500")
         if self._mentions_any(lowered, ["bist", "xu100", "bist100"]):
             symbols.append("BIST100")
+        if active_asset in {"nasdaq", "sp500", "bist100"}:
+            symbols.append(active_asset.upper())
 
         if not symbols:
             return []
@@ -376,7 +382,7 @@ class EconomyAgent:
             return current_asset
 
         lowered = user_message.lower().strip()
-        if not self._is_short_followup_message(lowered):
+        if not self._is_context_followup_message(lowered):
             return None
 
         for message in reversed(self.memory.snapshot(chat_id)):
@@ -384,6 +390,22 @@ class EconomyAgent:
                 asset = self._extract_asset_label(message.text)
                 if asset:
                     return asset
+        return None
+
+    def _infer_active_unit(self, chat_id: str | None, user_message: str) -> str | None:
+        current_unit = self._extract_unit_label(user_message)
+        if current_unit:
+            return current_unit
+
+        lowered = user_message.lower().strip()
+        if not self._is_context_followup_message(lowered):
+            return None
+
+        for message in reversed(self.memory.snapshot(chat_id)):
+            if message.text:
+                unit = self._extract_unit_label(message.text)
+                if unit:
+                    return unit
         return None
 
     def _is_short_followup_message(self, lowered_message: str) -> bool:
@@ -408,6 +430,33 @@ class EconomyAgent:
             "lot",
         }
 
+    def _is_context_followup_message(self, lowered_message: str) -> bool:
+        canonical = lowered_message.strip().replace("?", "")
+        if self._is_short_followup_message(canonical):
+            return True
+        followup_markers = [
+            "kaç tl ediyor",
+            "kac tl ediyor",
+            "tl ediyor",
+            "kaç lira ediyor",
+            "kac lira ediyor",
+            "lira ediyor",
+            "tl karşılığı",
+            "tl karsiligi",
+            "lira karşılığı",
+            "lira karsiligi",
+            "kaç dolar ediyor",
+            "kac dolar ediyor",
+            "dolar ediyor",
+            "usd ediyor",
+            "usd karşılığı",
+            "usd karsiligi",
+            "ne ediyor",
+            "karşılığı ne",
+            "karsiligi ne",
+        ]
+        return any(marker in canonical for marker in followup_markers)
+
     def _extract_asset_label(self, text: str) -> str | None:
         lowered = text.lower()
         asset_aliases = [
@@ -419,10 +468,24 @@ class EconomyAgent:
             ("bist100", ["bist", "bist100", "xu100"]),
             ("nasdaq", ["nasdaq"]),
             ("sp500", ["s&p", "sp500", "s&p 500"]),
-            ("usdtry", ["usdtry", "dolar", "dolar/tl"]),
+            ("usdtry", ["usdtry", "dolar/tl", "usd/try"]),
             ("eurtry", ["eurtry", "euro", "eur/tl"]),
         ]
         for label, aliases in asset_aliases:
+            if any(alias in lowered for alias in aliases):
+                return label
+        return None
+
+    def _extract_unit_label(self, text: str) -> str | None:
+        lowered = text.lower()
+        unit_aliases = [
+            ("ons", ["ons", "ounce"]),
+            ("gram", ["gram"]),
+            ("kilo", ["kilo", "kilosu", "kg", "kilogram"]),
+            ("varil", ["varil"]),
+            ("ton", ["ton", "tonu"]),
+        ]
+        for label, aliases in unit_aliases:
             if any(alias in lowered for alias in aliases):
                 return label
         return None
@@ -454,18 +517,37 @@ class EconomyAgent:
         chunks = [part.text for part in parts if getattr(part, "text", None)]
         return "\n".join(chunks).strip() or None
 
-    def _market_snapshot_direct_answer(self, user_message: str, snapshot: dict[str, Any]) -> str:
+    def _market_snapshot_direct_answer(
+        self,
+        user_message: str,
+        snapshot: dict[str, Any],
+        chat_id: str | None = None,
+    ) -> str:
         lowered = user_message.lower()
         derived = snapshot.get("derived_metrics") or {}
         quotes = snapshot.get("quotes") or []
+        active_unit = self._infer_active_unit(chat_id, user_message)
+        wants_try = self._mentions_any(lowered, ["tl", "try", "lira"])
+        wants_usd = self._mentions_any(lowered, ["usd", "dolar", "dollar"])
         gold_quote = self._find_quote(snapshot, "GC=F")
         gold_request = bool(gold_quote) and (
             self._mentions_any(lowered, ["altın", "altin", "gold", "xau"])
             or self._mentions_any(lowered, ["gram", "ons", "ounce", "kilo", "kilosu", "kg"])
+            or active_unit in {"ons", "gram", "kilo"}
         )
 
         if gold_request:
-            if self._mentions_any(lowered, ["gram", "tl", "try", "lira", "kaç tl", "kac tl"]):
+            if active_unit == "ons" and wants_try:
+                value = _first_numeric_value(derived.get("gold_ounce_try_estimate"))
+                if value is not None:
+                    return f"Altinin ons fiyati su an yaklasik {self._format_number(value)} TL seviyesinde."
+            if active_unit == "ons" and not wants_try:
+                value = _first_numeric_value(derived.get("gold_ounce_usd"))
+                if value is None:
+                    value = _first_numeric_value(gold_quote.get("price"))
+                if value is not None:
+                    return f"Altinin ons fiyati su an yaklasik {self._format_number(value)} USD seviyesinde."
+            if active_unit == "gram" or self._mentions_any(lowered, ["gram"]) or (wants_try and not wants_usd):
                 value = _first_numeric_value(derived.get("gold_gram_try_estimate"))
                 if value is not None:
                     return f"Gram altin su an yaklasik {self._format_number(value)} TL seviyesinde."
@@ -479,17 +561,34 @@ class EconomyAgent:
             if value is not None:
                 return f"Gram altin su an yaklasik {self._format_number(value)} TL seviyesinde."
 
-        if self._mentions_any(lowered, ["dolar", "usdtry", "usd/try", "dolar/tl"]):
-            quote = self._find_quote(snapshot, "USDTRY=X")
-            value = _first_numeric_value((quote or {}).get("price"))
-            if value is not None:
-                return f"Dolar/TL su an yaklasik {self._format_number(value)} seviyesinde."
-
         if self._mentions_any(lowered, ["euro", "eurtry", "eur/tl", "euro/tl"]):
             quote = self._find_quote(snapshot, "EURTRY=X")
             value = _first_numeric_value((quote or {}).get("price"))
             if value is not None:
                 return f"Euro/TL su an yaklasik {self._format_number(value)} seviyesinde."
+
+        main_quote = self._first_non_currency_quote(snapshot)
+        if main_quote:
+            try_value = self._convert_quote_to_try(main_quote, snapshot)
+            usd_value = self._convert_quote_to_usd(main_quote, snapshot)
+            if wants_try and try_value is not None:
+                name = main_quote.get("name") or main_quote.get("symbol") or "Bu varlik"
+                return f"{name} TL karsiligi su an yaklasik {self._format_number(try_value)} TL seviyesinde."
+            if wants_usd and usd_value is not None:
+                name = main_quote.get("name") or main_quote.get("symbol") or "Bu varlik"
+                return f"{name} dolar karsiligi su an yaklasik {self._format_number(usd_value)} USD seviyesinde."
+            value = _first_numeric_value(main_quote.get("price"))
+            if value is not None:
+                currency = main_quote.get("currency") or ""
+                suffix = f" {currency}" if currency else ""
+                name = main_quote.get("name") or main_quote.get("symbol") or "Bu varlik"
+                return f"{name} su an yaklasik {self._format_number(value)}{suffix} seviyesinde."
+
+        if self._mentions_any(lowered, ["dolar", "usdtry", "usd/try", "dolar/tl"]):
+            quote = self._find_quote(snapshot, "USDTRY=X")
+            value = _first_numeric_value((quote or {}).get("price"))
+            if value is not None:
+                return f"Dolar/TL su an yaklasik {self._format_number(value)} seviyesinde."
 
         usable_quotes = [quote for quote in quotes if _first_numeric_value(quote.get("price")) is not None]
         if usable_quotes:
@@ -501,6 +600,48 @@ class EconomyAgent:
             return f"{name} su an yaklasik {self._format_number(value)}{suffix} seviyesinde."
 
         return "Su an piyasa verisine ulasamadim. Biraz sonra tekrar deneyebilir misiniz?"
+
+    def _first_non_currency_quote(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        for quote in snapshot.get("quotes") or []:
+            symbol = quote.get("symbol")
+            if symbol not in {"USDTRY=X", "EURTRY=X", "EURUSD=X"}:
+                return quote
+        return None
+
+    def _convert_quote_to_try(self, quote: dict[str, Any], snapshot: dict[str, Any]) -> float | None:
+        value = _first_numeric_value(quote.get("price"))
+        if value is None:
+            return None
+
+        currency = (quote.get("currency") or "").upper()
+        symbol = quote.get("symbol")
+        if currency == "TRY" or str(symbol).endswith(".IS"):
+            return value
+        if currency != "USD":
+            return None
+
+        usdtry_quote = self._find_quote(snapshot, "USDTRY=X")
+        usdtry = _first_numeric_value((usdtry_quote or {}).get("price"))
+        if usdtry is None:
+            return None
+        return value * usdtry
+
+    def _convert_quote_to_usd(self, quote: dict[str, Any], snapshot: dict[str, Any]) -> float | None:
+        value = _first_numeric_value(quote.get("price"))
+        if value is None:
+            return None
+
+        currency = (quote.get("currency") or "").upper()
+        if currency == "USD":
+            return value
+        if currency != "TRY":
+            return None
+
+        usdtry_quote = self._find_quote(snapshot, "USDTRY=X")
+        usdtry = _first_numeric_value((usdtry_quote or {}).get("price"))
+        if usdtry in (None, 0):
+            return None
+        return value / usdtry
 
     def _find_quote(self, snapshot: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         for quote in snapshot.get("quotes") or []:

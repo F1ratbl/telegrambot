@@ -77,6 +77,26 @@ DISPLAY_NAMES = {
 }
 
 
+USD_PRICED_SYMBOLS = {
+    "^GSPC",
+    "^IXIC",
+    "^DJI",
+    "^RUT",
+    "^VIX",
+    "GC=F",
+    "SI=F",
+    "BZ=F",
+    "CL=F",
+    "BTC-USD",
+    "ETH-USD",
+}
+
+
+TRY_PRICED_SYMBOLS = {
+    "XU100.IS",
+}
+
+
 @dataclass(frozen=True)
 class MarketQuote:
     requested_symbol: str
@@ -136,7 +156,10 @@ class MarketDataClient:
     def _expand_requested_symbols(self, requested: list[str]) -> list[str]:
         expanded = list(requested)
         normalized = {normalize_symbol(symbol) for symbol in requested}
-        if "GC=F" in normalized and "USDTRY=X" not in normalized:
+        if (
+            normalized.intersection(USD_PRICED_SYMBOLS | TRY_PRICED_SYMBOLS)
+            and "USDTRY=X" not in normalized
+        ):
             expanded.append("USDTRY")
         return expanded
 
