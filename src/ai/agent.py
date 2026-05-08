@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import json
 import re
 import time
 from datetime import datetime
@@ -73,6 +72,12 @@ class EconomyAgent:
             )
 
     def _reply_with_gemini(self, user_message: str, chat_id: str | None, user_name: str | None) -> str:
+        prefetched_market = self._prefetch_market_snapshot(user_message, chat_id)
+        if prefetched_market is not None:
+            answer = self._market_snapshot_direct_answer(user_message, prefetched_market)
+            self.memory.remember_exchange(chat_id, user_message, answer)
+            return answer
+
         from google import genai
         from google.genai import types
 
@@ -80,37 +85,6 @@ class EconomyAgent:
             self._client = genai.Client(api_key=self.settings.google_api_key)
 
         contents = self._build_contents(types, user_message, chat_id, user_name)
-        prefetched_market = self._prefetch_market_snapshot(user_message, chat_id)
-        if prefetched_market is not None:
-            contents.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(
-                            text=(
-                                "Guncel market araci sonucu asagida. Kullanici anlik fiyat sordugu icin "
-                                "cevabini bu veri uzerinden kur ve bu veriyle celisen bir fiyat uydurma.\n"
-                                f"{json.dumps(prefetched_market, ensure_ascii=False)}"
-                            )
-                        )
-                    ],
-                )
-            )
-            try:
-                final_response = self._generate_content_with_retry(
-                    model=self.settings.gemini_model,
-                    contents=contents,
-                    config=self._build_config(types, include_tools=False),
-                )
-                answer = self._extract_text_or_none(final_response)
-            except Exception as exc:
-                logger.warning("Gemini failed after market prefetch, using market fallback: %s", exc)
-                answer = None
-            if not answer:
-                answer = self._market_snapshot_fallback_answer(user_message, prefetched_market)
-            self.memory.remember_exchange(chat_id, user_message, answer)
-            return answer
-
         config = self._build_config(types, include_tools=True)
 
         for _ in range(self.settings.gemini_max_tool_rounds):
@@ -480,18 +454,25 @@ class EconomyAgent:
         chunks = [part.text for part in parts if getattr(part, "text", None)]
         return "\n".join(chunks).strip() or None
 
-    def _market_snapshot_fallback_answer(self, user_message: str, snapshot: dict[str, Any]) -> str:
+    def _market_snapshot_direct_answer(self, user_message: str, snapshot: dict[str, Any]) -> str:
         lowered = user_message.lower()
         derived = snapshot.get("derived_metrics") or {}
         quotes = snapshot.get("quotes") or []
+        gold_quote = self._find_quote(snapshot, "GC=F")
+        gold_request = bool(gold_quote) and (
+            self._mentions_any(lowered, ["altın", "altin", "gold", "xau"])
+            or self._mentions_any(lowered, ["gram", "ons", "ounce", "kilo", "kilosu", "kg"])
+        )
 
-        if self._mentions_any(lowered, ["altın", "altin", "gold", "xau"]):
+        if gold_request:
             if self._mentions_any(lowered, ["gram", "tl", "try", "lira", "kaç tl", "kac tl"]):
                 value = _first_numeric_value(derived.get("gold_gram_try_estimate"))
                 if value is not None:
                     return f"Gram altin su an yaklasik {self._format_number(value)} TL seviyesinde."
             if self._mentions_any(lowered, ["ons", "ounce", "usd", "dolar"]):
                 value = _first_numeric_value(derived.get("gold_ounce_usd"))
+                if value is None:
+                    value = _first_numeric_value(gold_quote.get("price"))
                 if value is not None:
                     return f"Altinin ons fiyati su an yaklasik {self._format_number(value)} USD seviyesinde."
             value = _first_numeric_value(derived.get("gold_gram_try_estimate"))

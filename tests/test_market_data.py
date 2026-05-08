@@ -121,10 +121,10 @@ def test_fetch_quote_falls_back_to_chart_when_quote_endpoint_fails() -> None:
     assert quote.price == 3200.0
 
 
-def test_market_snapshot_fallback_answers_gold_try() -> None:
+def test_market_snapshot_direct_answer_answers_gold_try() -> None:
     memory = InMemoryConversationMemory()
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_fallback_answer(
+    answer = agent._market_snapshot_direct_answer(
         "altın kaç tl",
         {
             "status": "ok",
@@ -149,6 +149,36 @@ def test_market_snapshot_fallback_answers_gold_try() -> None:
         },
     )
     assert answer == "Gram altin su an yaklasik 4.115,30 TL seviyesinde."
+
+
+def test_market_snapshot_direct_answer_uses_gold_ounce_for_followup() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    answer = agent._market_snapshot_direct_answer(
+        "onsu ne kadar",
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold Futures",
+                    "price": 4718.2,
+                    "currency": "USD",
+                },
+                {
+                    "symbol": "USDTRY=X",
+                    "name": "USD/TRY",
+                    "price": 45.364,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {
+                "gold_ounce_usd": 4718.2,
+                "gold_gram_try_estimate": 6881.4257,
+            },
+        },
+    )
+    assert answer == "Altinin ons fiyati su an yaklasik 4.718,20 USD seviyesinde."
 
 
 def test_extract_text_returns_fallback_only_for_public_helper() -> None:
