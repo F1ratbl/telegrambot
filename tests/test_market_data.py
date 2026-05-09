@@ -1,6 +1,7 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
 from src.tools.news import NewsSearchClient
 from src.bot.telegram import _sanitize_telegram_text
+from src.bot.webhook import _handle_update
 from src.bot.memory import InMemoryConversationMemory
 from src.ai.agent import EconomyAgent, START_MESSAGE
 from src.config import Settings
@@ -38,6 +39,66 @@ class _FakeMarket:
         return self.snapshot
 
 
+class _FakeAgent:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def reply(self, user_message: str, chat_id: str | None = None) -> str:
+        self.messages.append(user_message)
+        return f"cevap: {user_message}"
+
+
+class _FakeTelegram:
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+        self.voices: list[dict] = []
+        self.downloaded_file_ids: list[str] = []
+
+    def send_message(self, chat_id, text, reply_to_message_id=None) -> None:
+        self.messages.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_to_message_id": reply_to_message_id,
+            }
+        )
+
+    def send_voice(self, chat_id, audio, reply_to_message_id=None, caption=None) -> None:
+        self.voices.append(
+            {
+                "chat_id": chat_id,
+                "audio": audio,
+                "reply_to_message_id": reply_to_message_id,
+                "caption": caption,
+            }
+        )
+
+    def download_file(self, file_id: str) -> bytes:
+        self.downloaded_file_ids.append(file_id)
+        return b"voice-bytes"
+
+
+class _FakeSTT:
+    enabled = True
+
+    def transcribe(self, audio: bytes, mimetype: str | None = None) -> str:
+        assert audio == b"voice-bytes"
+        assert mimetype == "audio/ogg"
+        return "altin kac tl"
+
+
+class _FakeTTS:
+    enabled = True
+
+    def synthesize(self, text: str) -> bytes:
+        assert text == "cevap: altin kac tl"
+        return b"mp3-bytes"
+
+
+class _DisabledVoice:
+    enabled = False
+
+
 def test_normalize_symbol_aliases() -> None:
     assert normalize_symbol("BIST 100") == "XU100.IS"
     assert normalize_symbol("s&p 500") == "^GSPC"
@@ -71,6 +132,71 @@ def test_sanitize_telegram_text_preserves_safe_html_links() -> None:
     sanitized = _sanitize_telegram_text(text)
     assert '<a href="https://example.com/news?a=1&amp;b=2">bicpara.com</a>' in sanitized
     assert "&lt;script&gt;" in sanitized
+
+
+def test_webhook_text_message_returns_text_reply() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 7,
+                "chat": {"id": 123},
+                "text": "dolar kac tl",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+    assert handled is True
+    assert agent.messages == ["dolar kac tl"]
+    assert telegram.messages[0]["text"] == "cevap: dolar kac tl"
+    assert telegram.voices == []
+
+
+def test_webhook_voice_message_returns_voice_reply() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 8,
+                "chat": {"id": 123},
+                "voice": {"file_id": "voice-file-id", "mime_type": "audio/ogg"},
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        _FakeSTT(),  # type: ignore[arg-type]
+        _FakeTTS(),  # type: ignore[arg-type]
+    )
+    assert handled is True
+    assert telegram.downloaded_file_ids == ["voice-file-id"]
+    assert agent.messages == ["altin kac tl"]
+    assert telegram.voices[0]["audio"] == b"mp3-bytes"
+    assert telegram.voices[0]["reply_to_message_id"] == 8
+    assert telegram.messages == []
+
+
+def test_webhook_voice_message_warns_when_voice_config_missing() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 9,
+                "chat": {"id": 123},
+                "voice": {"file_id": "voice-file-id", "mime_type": "audio/ogg"},
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        _DisabledVoice(),  # type: ignore[arg-type]
+        _DisabledVoice(),  # type: ignore[arg-type]
+    )
+    assert handled is True
+    assert "DEEPGRAM_API_KEY" in telegram.messages[0]["text"]
+    assert telegram.voices == []
 
 
 def test_memory_stores_name_only_when_explicitly_provided() -> None:

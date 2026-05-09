@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - dependency is installed in normal runt
         return False
 
 from src.ai.agent import EconomyAgent
+from src.audio.speech import SpeechToTextClient, TextToSpeechClient
 from src.bot.memory import InMemoryConversationMemory
 from src.bot.telegram import TelegramClient
 from src.bot.webhook import create_telegram_blueprint
@@ -37,6 +38,8 @@ def create_app() -> Flask:
     market_data = MarketDataClient(settings)
     knowledge_base = KnowledgeBaseTool(settings)
     news_search = NewsSearchClient(settings)
+    speech_to_text = SpeechToTextClient(settings)
+    text_to_speech = TextToSpeechClient(settings)
     agent = EconomyAgent(
         settings=settings,
         market_data=market_data,
@@ -47,7 +50,15 @@ def create_app() -> Flask:
     telegram = TelegramClient(settings)
 
     app = Flask(__name__)
-    app.register_blueprint(create_telegram_blueprint(settings, agent, telegram))
+    app.register_blueprint(
+        create_telegram_blueprint(
+            settings=settings,
+            agent=agent,
+            telegram=telegram,
+            speech_to_text=speech_to_text,
+            text_to_speech=text_to_speech,
+        )
+    )
 
     @app.get("/")
     @app.get("/health")
@@ -59,6 +70,7 @@ def create_app() -> Flask:
                 "gemini_model": settings.gemini_model,
                 "qdrant_configured": settings.qdrant_enabled,
                 "telegram_configured": settings.telegram_enabled,
+                "voice_configured": settings.voice_enabled,
             },
             200,
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+from io import BytesIO
 import logging
 import re
 from typing import Any
@@ -40,6 +41,48 @@ class TelegramClient:
                 payload["allow_sending_without_reply"] = True
             self._post("sendMessage", payload)
 
+    def send_voice(
+        self,
+        chat_id: int | str,
+        audio: bytes,
+        reply_to_message_id: int | None = None,
+        caption: str | None = None,
+    ) -> None:
+        if not self.settings.telegram_bot_token:
+            logger.warning("TELEGRAM_BOT_TOKEN is not configured; skipping Telegram voice send.")
+            return
+        if not audio:
+            raise RuntimeError("Voice audio is empty.")
+
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "parse_mode": "HTML",
+        }
+        if caption:
+            payload["caption"] = _sanitize_telegram_text(caption)[:1024]
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+            payload["allow_sending_without_reply"] = True
+
+        voice_file = BytesIO(audio)
+        voice_file.name = "reply.mp3"
+        self._post_file("sendVoice", payload, {"voice": ("reply.mp3", voice_file, "audio/mpeg")})
+
+    def download_file(self, file_id: str) -> bytes:
+        if not self.settings.telegram_bot_token:
+            raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured.")
+
+        import requests
+
+        file_data = self._post("getFile", {"file_id": file_id})
+        file_path = ((file_data.get("result") or {}).get("file_path")) or ""
+        if not file_path:
+            raise RuntimeError("Telegram did not return a file_path.")
+        url = f"{self.api_base}/file/bot{self.settings.telegram_bot_token}/{file_path}"
+        response = requests.get(url, timeout=self.settings.request_timeout_seconds)
+        response.raise_for_status()
+        return response.content
+
     def _post(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         import requests
 
@@ -47,6 +90,27 @@ class TelegramClient:
         response = requests.post(
             url,
             json=payload,
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Telegram API returned an error: {data}")
+        return data
+
+    def _post_file(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        files: dict[str, tuple[str, BytesIO, str]],
+    ) -> dict[str, Any]:
+        import requests
+
+        url = f"{self.api_base}/bot{self.settings.telegram_bot_token}/{method}"
+        response = requests.post(
+            url,
+            data=payload,
+            files=files,
             timeout=self.settings.request_timeout_seconds,
         )
         response.raise_for_status()

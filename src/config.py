@@ -68,6 +68,15 @@ class Settings:
     telegram_bot_token: str | None = None
     telegram_webhook_secret: str | None = None
 
+    deepgram_api_key: str | None = None
+    deepgram_model: str = "nova-3"
+    deepgram_language: str = "tr"
+
+    elevenlabs_api_key: str | None = None
+    elevenlabs_voice_id: str | None = None
+    elevenlabs_model_id: str = "eleven_multilingual_v2"
+    elevenlabs_output_format: str = "mp3_44100_128"
+
     google_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
     gemini_temperature: float | None = None
@@ -101,6 +110,13 @@ class Settings:
         return cls(
             telegram_bot_token=_optional(env.get("TELEGRAM_BOT_TOKEN")),
             telegram_webhook_secret=_optional(env.get("TELEGRAM_WEBHOOK_SECRET")),
+            deepgram_api_key=_optional(env.get("DEEPGRAM_API_KEY")),
+            deepgram_model=_optional(env.get("DEEPGRAM_MODEL")) or "nova-3",
+            deepgram_language=_optional(env.get("DEEPGRAM_LANGUAGE")) or "tr",
+            elevenlabs_api_key=_optional(env.get("ELEVENLABS_API_KEY")),
+            elevenlabs_voice_id=_optional(env.get("ELEVENLABS_VOICE_ID")),
+            elevenlabs_model_id=_optional(env.get("ELEVENLABS_MODEL_ID")) or "eleven_multilingual_v2",
+            elevenlabs_output_format=_optional(env.get("ELEVENLABS_OUTPUT_FORMAT")) or "mp3_44100_128",
             google_api_key=_optional(env.get("GOOGLE_API_KEY")) or _optional(env.get("GEMINI_API_KEY")),
             gemini_model=_optional(env.get("GEMINI_MODEL")) or "gemini-2.5-flash",
             gemini_temperature=_optional_float(env, "GEMINI_TEMPERATURE"),
@@ -136,3 +152,7 @@ class Settings:
     @property
     def qdrant_enabled(self) -> bool:
         return bool(self.qdrant_url)
+
+    @property
+    def voice_enabled(self) -> bool:
+        return bool(self.deepgram_api_key and self.elevenlabs_api_key and self.elevenlabs_voice_id)
