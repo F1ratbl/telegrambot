@@ -51,6 +51,15 @@ SYMBOL_ALIASES = {
     "BITCOIN": "BTC-USD",
     "ETH": "ETH-USD",
     "ETHUSD": "ETH-USD",
+    "AMD": "AMD",
+    "NVDA": "NVDA",
+    "NVIDIA": "NVDA",
+    "AAPL": "AAPL",
+    "APPLE": "AAPL",
+    "TSLA": "TSLA",
+    "TESLA": "TSLA",
+    "MSFT": "MSFT",
+    "MICROSOFT": "MSFT",
 }
 
 
@@ -74,6 +83,11 @@ DISPLAY_NAMES = {
     "CL=F": "WTI Oil",
     "BTC-USD": "Bitcoin",
     "ETH-USD": "Ethereum",
+    "AMD": "AMD",
+    "NVDA": "Nvidia",
+    "AAPL": "Apple",
+    "TSLA": "Tesla",
+    "MSFT": "Microsoft",
 }
 
 
@@ -89,6 +103,11 @@ USD_PRICED_SYMBOLS = {
     "CL=F",
     "BTC-USD",
     "ETH-USD",
+    "AMD",
+    "NVDA",
+    "AAPL",
+    "TSLA",
+    "MSFT",
 }
 
 

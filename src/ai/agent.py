@@ -280,6 +280,8 @@ class EconomyAgent:
 
     def _is_news_question(self, user_message: str) -> bool:
         lowered = user_message.lower()
+        if "neden" in lowered and any(marker in lowered for marker in ["yükseldi", "yukseldi", "düştü", "dustu"]):
+            return True
         news_markers = [
             "haber",
             "haberler",
@@ -313,6 +315,11 @@ class EconomyAgent:
             "sp500": "S&P 500",
             "usdtry": "dolar TL",
             "eurtry": "euro TL",
+            "amd": "AMD",
+            "nvda": "Nvidia",
+            "aapl": "Apple",
+            "tsla": "Tesla",
+            "msft": "Microsoft",
         }
         if asset:
             return asset_queries.get(asset, asset)
@@ -424,7 +431,17 @@ class EconomyAgent:
             symbols.append("SP500")
         if self._mentions_any(lowered, ["bist", "xu100", "bist100"]):
             symbols.append("BIST100")
-        if active_asset in {"nasdaq", "sp500", "bist100"}:
+        if self._mentions_any(lowered, ["amd"]):
+            symbols.append("AMD")
+        if self._mentions_any(lowered, ["nvidia", "nvda"]):
+            symbols.append("NVDA")
+        if self._mentions_any(lowered, ["apple", "aapl"]):
+            symbols.append("AAPL")
+        if self._mentions_any(lowered, ["tesla", "tsla"]):
+            symbols.append("TSLA")
+        if self._mentions_any(lowered, ["microsoft", "msft"]):
+            symbols.append("MSFT")
+        if active_asset in {"nasdaq", "sp500", "bist100", "amd", "nvda", "aapl", "tsla", "msft"}:
             symbols.append(active_asset.upper())
 
         if not symbols:
@@ -564,6 +581,11 @@ class EconomyAgent:
             "ne ediyor",
             "karşılığı ne",
             "karsiligi ne",
+            "haberlere bak",
+            "haberlerine bak",
+            "haberleri kontrol",
+            "haberleri var",
+            "son haberler",
         ]
         return any(marker in canonical for marker in followup_markers)
 
@@ -580,6 +602,11 @@ class EconomyAgent:
             ("sp500", ["s&p", "sp500", "s&p 500"]),
             ("usdtry", ["usdtry", "dolar/tl", "usd/try"]),
             ("eurtry", ["eurtry", "euro", "eur/tl"]),
+            ("amd", ["amd", "advanced micro devices"]),
+            ("nvda", ["nvda", "nvidia"]),
+            ("aapl", ["aapl", "apple"]),
+            ("tsla", ["tsla", "tesla"]),
+            ("msft", ["msft", "microsoft"]),
         ]
         for label, aliases in asset_aliases:
             if any(alias in lowered for alias in aliases):

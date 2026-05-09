@@ -1,4 +1,5 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
+from src.tools.news import NewsSearchClient
 from src.bot.telegram import _sanitize_telegram_text
 from src.bot.memory import InMemoryConversationMemory
 from src.ai.agent import EconomyAgent, START_MESSAGE
@@ -353,6 +354,25 @@ def test_news_question_returns_latest_items_without_gemini() -> None:
     assert news.queries == ["altin"]
 
 
+def test_news_followup_uses_previous_amd_context() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange("chat-1", "amd neden bu kadar yukseldi", "AMD hissesi...")
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("haberlere bakar misin", chat_id="chat-1")
+    assert "AMD icin son haberler:" in answer
+    assert news.queries == ["AMD"]
+
+
+def test_amd_news_question_uses_amd_query() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("amd neden bu kadar yukseldi", chat_id="chat-1")
+    assert "AMD icin son haberler:" in answer
+    assert news.queries == ["AMD"]
+
+
 def test_large_market_move_appends_news() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
@@ -382,3 +402,28 @@ def test_large_market_move_appends_news() -> None:
     assert "Nasdaq Composite su an yaklasik 24.500,00 USD seviyesinde." in answer
     assert "Hareket belirgin oldugu icin son haberlerden bazilari:" in answer
     assert news.queries == ["Nasdaq"]
+
+
+def test_news_summary_prefers_article_text_over_repeated_title() -> None:
+    class FakeNewsSearch(NewsSearchClient):
+        def _fetch_article_text(self, link: str) -> tuple[str | None, str]:
+            return (
+                "https://example.com/amd",
+                "AMD hisseleri yapay zeka çiplerine yönelik güçlü talep ve analist hedef fiyat artışlarıyla yükseldi. Şirketin veri merkezi gelirleri yatırımcı beklentilerini destekledi.",
+            )
+
+    rss = """
+    <rss><channel>
+      <item>
+        <title>AMD yükseldi - Kaynak</title>
+        <link>https://news.google.com/rss/articles/example</link>
+        <description>AMD yükseldi - Kaynak</description>
+        <source>Kaynak</source>
+      </item>
+    </channel></rss>
+    """
+    client = FakeNewsSearch(Settings())
+    items = client._parse_items(rss, 1)
+    assert items[0].link == "https://example.com/amd"
+    assert "yapay zeka çiplerine" in items[0].summary
+    assert items[0].summary != items[0].title
