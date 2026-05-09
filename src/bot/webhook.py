@@ -167,14 +167,19 @@ def _handle_voice_message(
         spoken_reply = text_to_speech.synthesize(reply)
     except SpeechServiceError as exc:
         logger.exception("ElevenLabs synthesis failed: %s", exc)
-        if exc.provider == "ElevenLabs" and exc.status_code == 402:
+        error_message = exc.message.lower()
+        if exc.provider == "ElevenLabs" and exc.status_code == 402 and "library voices" in error_message:
             error_text = (
-                "Sesli cevap uretemedim; ElevenLabs TTS istegi 402 Payment Required ile reddedildi. "
-                "Voice ID, model, workspace/kota veya plan kisitini kontrol etmek gerekiyor. "
+                "Sesli yanit su an secili ElevenLabs sesi bu planda API'den kullanilamadigi icin uretilemedi. "
+                "Cevabi yazili birakiyorum:\n\n"
+            )
+        elif exc.provider == "ElevenLabs" and exc.status_code == 402:
+            error_text = (
+                "Sesli yanit su an ElevenLabs plan/kota kisiti nedeniyle uretilemedi. "
                 "Cevabi yazili birakiyorum:\n\n"
             )
         else:
-            error_text = "Sesli cevap uretemedim. Cevabi yazili birakiyorum:\n\n"
+            error_text = "Sesli yanit su an uretilemedi. Cevabi yazili birakiyorum:\n\n"
         telegram.send_message(
             chat_id=chat_id,
             text=f"{error_text}{reply}",

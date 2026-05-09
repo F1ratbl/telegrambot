@@ -101,7 +101,11 @@ class _FailingTTS:
 
     def synthesize(self, text: str) -> bytes:
         assert text == "cevap: altin kac tl"
-        raise SpeechServiceError("ElevenLabs", 402, "quota or plan limit")
+        raise SpeechServiceError(
+            "ElevenLabs",
+            402,
+            "Free users cannot use library voices via the API.",
+        )
 
 
 class _DisabledVoice:
@@ -215,7 +219,7 @@ def test_webhook_voice_message_falls_back_to_text_when_tts_fails() -> None:
     )
     assert handled is True
     assert telegram.voices == []
-    assert "402 Payment Required" in telegram.messages[0]["text"]
+    assert "secili ElevenLabs sesi" in telegram.messages[0]["text"]
     assert "cevap: altin kac tl" in telegram.messages[0]["text"]
 
 
