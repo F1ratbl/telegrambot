@@ -40,7 +40,7 @@ class NewsSearchClient:
 
         clean_query = query.strip()
         max_items = max(1, min(limit or self.settings.news_max_items, 10))
-        rss_query = quote_plus(f"{clean_query} ekonomi finans when:7d")
+        rss_query = quote_plus(_build_rss_query(clean_query))
         url = f"{self.google_news_url}?q={rss_query}&hl=tr&gl=TR&ceid=TR:tr"
         try:
             response = requests.get(
@@ -130,8 +130,10 @@ def _clean_text(value: str | None) -> str:
 
 def _build_summary(title: str, description: str, source: str | None) -> str:
     cleaned = _remove_title_overlap(description, title)
+    if _is_generic_google_text(cleaned):
+        cleaned = ""
     if not cleaned:
-        cleaned = "Haber, ilgili varlikla ilgili son piyasa gelismelerine deginiyor."
+        cleaned = _title_based_summary(title)
 
     sentences = _split_sentences(cleaned)
     if sentences:
@@ -201,10 +203,12 @@ class _ArticleTextParser(HTMLParser):
             self._current.append(data)
 
     def article_text(self) -> str:
-        if self.meta_description:
+        if self.meta_description and not _is_generic_google_text(self.meta_description):
             return self.meta_description
         if self._paragraphs:
-            return " ".join(self._paragraphs[:3])
+            text = " ".join(self._paragraphs[:3])
+            if not _is_generic_google_text(text):
+                return text
         return self.title
 
 
@@ -218,6 +222,69 @@ def _remove_title_overlap(text: str, title: str) -> str:
     if clean_title and cleaned.lower().startswith(clean_title.lower()):
         cleaned = cleaned[len(clean_title) :].strip(" -:|")
     return cleaned
+
+
+def _build_rss_query(query: str) -> str:
+    clean = query.strip()
+    lowered = clean.lower()
+    aliases = {
+        "amd": '"AMD" stock shares earnings AI',
+        "bitcoin": '"bitcoin" crypto price ETF market',
+        "altin": '"altin" fiyat piyasa ons gram',
+        "altın": '"altın" fiyat piyasa ons gram',
+        "gumus": '"gumus" fiyat piyasa',
+        "gümüş": '"gümüş" fiyat piyasa',
+        "nasdaq": '"Nasdaq" stock market',
+        "s&p 500": '"S&P 500" stock market',
+        "sp500": '"S&P 500" stock market',
+        "bist 100": '"BIST 100" borsa piyasa',
+        "petrol": '"petrol" brent fiyat piyasa',
+    }
+    for key, value in aliases.items():
+        if key in lowered:
+            return f"{value} when:7d"
+    return f'"{clean}" ekonomi finans piyasa when:7d'
+
+
+def _is_generic_google_text(text: str) -> bool:
+    lowered = text.lower()
+    generic_markers = [
+        "comprehensive up-to-date news coverage",
+        "aggregated from sources all over the world by google news",
+        "google news",
+    ]
+    return any(marker in lowered for marker in generic_markers)
+
+
+def _title_based_summary(title: str) -> str:
+    clean_title = _strip_source_from_title(title)
+    lowered = clean_title.lower()
+    if any(word in lowered for word in ["yükseldi", "yukseldi", "arttı", "artti", "ralli"]):
+        return (
+            f"Haberde {clean_title} ifadesi one cikiyor. Bu, olumlu haber akisi "
+            "veya risk algisindaki degisimin fiyatlamayi destekledigine isaret ediyor olabilir."
+        )
+    if any(word in lowered for word in ["düştü", "dustu", "geriledi", "azaldı", "azaldi"]):
+        return (
+            f"Haberde {clean_title} ifadesi one cikiyor. Bu, zayif haber akisi veya risk "
+            "istahindaki bozulmanin fiyat uzerinde baski kurduguna isaret ediyor olabilir."
+        )
+    if any(word in lowered for word in ["beklenti", "faiz", "enflasyon", "fed", "merkez bank"]):
+        return (
+            f"Haber basligi {clean_title} temasina odaklaniyor. Bu tur makro basliklar "
+            "kur, emtia ve endeks fiyatlamasinda beklenti kanaliyla etkili olabilir."
+        )
+    return (
+        f"Haber basligi {clean_title} temasina odaklaniyor. Detay metni okunamadigi icin "
+        "ozet baslik uzerinden yorumlandi."
+    )
+
+
+def _strip_source_from_title(title: str) -> str:
+    clean = _clean_text(title)
+    if " - " in clean:
+        return clean.rsplit(" - ", 1)[0].strip()
+    return clean
 
 
 def _split_sentences(text: str) -> list[str]:

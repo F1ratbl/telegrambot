@@ -427,3 +427,27 @@ def test_news_summary_prefers_article_text_over_repeated_title() -> None:
     assert items[0].link == "https://example.com/amd"
     assert "yapay zeka çiplerine" in items[0].summary
     assert items[0].summary != items[0].title
+
+
+def test_news_summary_ignores_generic_google_description() -> None:
+    class FakeNewsSearch(NewsSearchClient):
+        def _fetch_article_text(self, link: str) -> tuple[str | None, str]:
+            return (
+                link,
+                "Comprehensive up-to-date news coverage, aggregated from sources all over the world by Google News.",
+            )
+
+    rss = """
+    <rss><channel>
+      <item>
+        <title>Altın barış iyimserliği ile yükseldi - Kıbrıs Postası</title>
+        <link>https://news.google.com/rss/articles/example</link>
+        <description>Comprehensive up-to-date news coverage, aggregated from sources all over the world by Google News.</description>
+        <source>Kıbrıs Postası</source>
+      </item>
+    </channel></rss>
+    """
+    client = FakeNewsSearch(Settings())
+    items = client._parse_items(rss, 1)
+    assert "Comprehensive up-to-date" not in items[0].summary
+    assert "barış iyimserliği" in items[0].summary
