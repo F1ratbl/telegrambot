@@ -5,6 +5,7 @@ import re
 import time
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.ai.prompts import SYSTEM_PROMPT
@@ -343,11 +344,18 @@ class EconomyAgent:
             title = item.get("title") or "Baslik yok"
             summary = item.get("summary") or "Bu haber ilgili piyasadaki son gelismeye deginiyor."
             link = item.get("link") or ""
+            source = item.get("source") or self._link_label(link)
             lines.append(f"{index}. {title}")
             lines.append(f"Ozet: {summary}")
             if link:
-                lines.append(f"Link: {link}")
+                lines.append(f"Kaynak: <a href=\"{link}\">{source}</a>")
         return "\n".join(lines)
+
+    def _link_label(self, link: str) -> str:
+        if not link:
+            return "Haberi oku"
+        host = urlparse(link).netloc.replace("www.", "")
+        return host or "Haberi oku"
 
     def _news_for_large_market_move(
         self,

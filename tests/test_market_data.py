@@ -66,6 +66,13 @@ def test_sanitize_telegram_text_removes_markdown_stars() -> None:
     assert "Altin 4695,30 USD." in sanitized
 
 
+def test_sanitize_telegram_text_preserves_safe_html_links() -> None:
+    text = 'Kaynak: <a href="https://example.com/news?a=1&b=2">bicpara.com</a> <script>'
+    sanitized = _sanitize_telegram_text(text)
+    assert '<a href="https://example.com/news?a=1&amp;b=2">bicpara.com</a>' in sanitized
+    assert "&lt;script&gt;" in sanitized
+
+
 def test_memory_stores_name_only_when_explicitly_provided() -> None:
     memory = InMemoryConversationMemory()
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import re
 from typing import Any
@@ -32,6 +33,7 @@ class TelegramClient:
                 "chat_id": chat_id,
                 "text": chunk,
                 "disable_web_page_preview": True,
+                "parse_mode": "HTML",
             }
             if index == 0 and reply_to_message_id is not None:
                 payload["reply_to_message_id"] = reply_to_message_id
@@ -82,4 +84,24 @@ def _sanitize_telegram_text(text: str) -> str:
     clean = clean.replace("**", "")
     clean = re.sub(r"(?m)^\s*[*-]\s+", "", clean)
     clean = re.sub(r"\n{3,}", "\n\n", clean)
+    anchors: list[str] = []
+
+    def keep_anchor(match: re.Match[str]) -> str:
+        url = match.group(1).strip()
+        label = match.group(2).strip()
+        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            return html.escape(label or "Haberi oku")
+        anchor = f'<a href="{html.escape(url, quote=True)}">{html.escape(label or "Haberi oku")}</a>'
+        anchors.append(anchor)
+        return f"@@ANCHOR_{len(anchors) - 1}@@"
+
+    clean = re.sub(
+        r'<a\s+href="(https?://[^"]+)">([^<>]+)</a>',
+        keep_anchor,
+        clean,
+        flags=re.IGNORECASE,
+    )
+    clean = html.escape(clean)
+    for index, anchor in enumerate(anchors):
+        clean = clean.replace(f"@@ANCHOR_{index}@@", anchor)
     return clean.strip()
