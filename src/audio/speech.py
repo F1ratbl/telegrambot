@@ -9,6 +9,14 @@ from src.config import Settings
 logger = logging.getLogger(__name__)
 
 
+class SpeechServiceError(RuntimeError):
+    def __init__(self, provider: str, status_code: int, message: str) -> None:
+        super().__init__(f"{provider} API error {status_code}: {message}")
+        self.provider = provider
+        self.status_code = status_code
+        self.message = message
+
+
 class SpeechToTextClient:
     api_url = "https://api.deepgram.com/v1/listen"
 
@@ -41,7 +49,7 @@ class SpeechToTextClient:
             data=audio,
             timeout=self.settings.request_timeout_seconds,
         )
-        response.raise_for_status()
+        _raise_for_status(response, "Deepgram")
         return _extract_transcript(response.json())
 
 
@@ -71,7 +79,7 @@ class TextToSpeechClient:
             headers={
                 "xi-api-key": self.settings.elevenlabs_api_key,
                 "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
+                "Accept": _audio_accept_header(self.settings.elevenlabs_output_format),
             },
             json={
                 "text": clean_text,
@@ -80,8 +88,38 @@ class TextToSpeechClient:
             },
             timeout=self.settings.request_timeout_seconds,
         )
-        response.raise_for_status()
+        _raise_for_status(response, "ElevenLabs")
         return response.content
+
+
+def _raise_for_status(response: Any, provider: str) -> None:
+    if 200 <= response.status_code < 300:
+        return
+    raise SpeechServiceError(provider, response.status_code, _response_error_message(response))
+
+
+def _response_error_message(response: Any) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return (getattr(response, "text", "") or "No response body.").strip()[:700]
+
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            message = detail.get("message") or detail.get("status")
+            if message:
+                return str(message)
+        message = payload.get("message") or payload.get("error")
+        if message:
+            return str(message)
+    return str(payload)[:700]
+
+
+def _audio_accept_header(output_format: str | None) -> str:
+    if (output_format or "").lower().startswith("opus"):
+        return "audio/ogg"
+    return "audio/mpeg"
 
 
 def _extract_transcript(payload: dict[str, Any]) -> str:

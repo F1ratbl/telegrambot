@@ -64,9 +64,10 @@ class TelegramClient:
             payload["reply_to_message_id"] = reply_to_message_id
             payload["allow_sending_without_reply"] = True
 
+        method, field_name, filename, mimetype = self._voice_upload_spec()
         voice_file = BytesIO(audio)
-        voice_file.name = "reply.mp3"
-        self._post_file("sendVoice", payload, {"voice": ("reply.mp3", voice_file, "audio/mpeg")})
+        voice_file.name = filename
+        self._post_file(method, payload, {field_name: (filename, voice_file, mimetype)})
 
     def download_file(self, file_id: str) -> bytes:
         if not self.settings.telegram_bot_token:
@@ -97,6 +98,12 @@ class TelegramClient:
         if not data.get("ok"):
             raise RuntimeError(f"Telegram API returned an error: {data}")
         return data
+
+    def _voice_upload_spec(self) -> tuple[str, str, str, str]:
+        output_format = (self.settings.elevenlabs_output_format or "").lower()
+        if output_format.startswith("opus"):
+            return "sendVoice", "voice", "reply.ogg", "audio/ogg"
+        return "sendAudio", "audio", "reply.mp3", "audio/mpeg"
 
     def _post_file(
         self,

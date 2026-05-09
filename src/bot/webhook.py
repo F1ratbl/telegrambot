@@ -6,7 +6,7 @@ from typing import Any
 from flask import Blueprint, jsonify, request
 
 from src.ai.agent import EconomyAgent
-from src.audio.speech import SpeechToTextClient, TextToSpeechClient
+from src.audio.speech import SpeechServiceError, SpeechToTextClient, TextToSpeechClient
 from src.bot.telegram import TelegramClient
 from src.config import Settings
 
@@ -124,28 +124,85 @@ def _handle_voice_message(
 
     try:
         audio = telegram.download_file(file_id)
-        transcript = speech_to_text.transcribe(audio, mimetype=voice.get("mime_type") or "audio/ogg")
-        if not transcript:
-            telegram.send_message(
-                chat_id=chat_id,
-                text="Sesi anlayamadim. Biraz daha net tekrar gonderebilir misiniz?",
-                reply_to_message_id=message.get("message_id"),
-            )
-            return True
+    except Exception:
+        logger.exception("Failed to download Telegram voice file.")
+        telegram.send_message(
+            chat_id=chat_id,
+            text="Ses dosyasini Telegram'dan indiremedim. Biraz sonra tekrar deneyebilir misiniz?",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return True
 
+    try:
+        transcript = speech_to_text.transcribe(audio, mimetype=voice.get("mime_type") or "audio/ogg")
+    except Exception:
+        logger.exception("Deepgram transcription failed.")
+        telegram.send_message(
+            chat_id=chat_id,
+            text="Deepgram sesi yaziya ceviremedi. API key, kota veya ses formatini kontrol etmek gerekiyor.",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return True
+
+    if not transcript:
+        telegram.send_message(
+            chat_id=chat_id,
+            text="Sesi anlayamadim. Biraz daha net tekrar gonderebilir misiniz?",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return True
+
+    try:
         reply = agent.reply(user_message=transcript, chat_id=str(chat_id))
+    except Exception:
+        logger.exception("Agent failed after voice transcription.")
+        telegram.send_message(
+            chat_id=chat_id,
+            text="Sesi yazıya cevirdim ama cevabi olustururken sorun yasadim. Biraz sonra tekrar deneyebilir misiniz?",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return True
+
+    try:
         spoken_reply = text_to_speech.synthesize(reply)
+    except SpeechServiceError as exc:
+        logger.exception("ElevenLabs synthesis failed: %s", exc)
+        if exc.provider == "ElevenLabs" and exc.status_code == 402:
+            error_text = (
+                "Sesli cevap uretemedim; ElevenLabs TTS istegi 402 Payment Required ile reddedildi. "
+                "Voice ID, model, workspace/kota veya plan kisitini kontrol etmek gerekiyor. "
+                "Cevabi yazili birakiyorum:\n\n"
+            )
+        else:
+            error_text = "Sesli cevap uretemedim. Cevabi yazili birakiyorum:\n\n"
+        telegram.send_message(
+            chat_id=chat_id,
+            text=f"{error_text}{reply}",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return True
+    except Exception:
+        logger.exception("ElevenLabs synthesis failed.")
+        telegram.send_message(
+            chat_id=chat_id,
+            text=f"Sesli cevap uretemedim. Cevabi yazili birakiyorum:\n\n{reply}",
+            reply_to_message_id=message.get("message_id"),
+        )
+        return True
+
+    try:
         telegram.send_voice(
             chat_id=chat_id,
             audio=spoken_reply,
             reply_to_message_id=message.get("message_id"),
         )
-        return True
     except Exception:
-        logger.exception("Failed to process Telegram voice message.")
+        logger.exception("Failed to send Telegram voice reply.")
         telegram.send_message(
             chat_id=chat_id,
-            text="Sesli mesaji islerken bir sorun oldu. Biraz sonra tekrar deneyebilir misiniz?",
+            text="Cevabi olusturdum ama Telegram'a ses olarak gonderemedim. Ses formatini kontrol etmek gerekiyor.",
             reply_to_message_id=message.get("message_id"),
         )
         return True
+
+    return True

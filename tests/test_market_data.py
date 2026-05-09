@@ -1,8 +1,9 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
 from src.tools.news import NewsSearchClient
-from src.bot.telegram import _sanitize_telegram_text
+from src.bot.telegram import TelegramClient, _sanitize_telegram_text
 from src.bot.webhook import _handle_update
 from src.bot.memory import InMemoryConversationMemory
+from src.audio.speech import SpeechServiceError
 from src.ai.agent import EconomyAgent, START_MESSAGE
 from src.config import Settings
 
@@ -95,8 +96,26 @@ class _FakeTTS:
         return b"mp3-bytes"
 
 
+class _FailingTTS:
+    enabled = True
+
+    def synthesize(self, text: str) -> bytes:
+        assert text == "cevap: altin kac tl"
+        raise SpeechServiceError("ElevenLabs", 402, "quota or plan limit")
+
+
 class _DisabledVoice:
     enabled = False
+
+
+class _RecordingTelegramClient(TelegramClient):
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.uploads: list[dict] = []
+
+    def _post_file(self, method, payload, files):  # type: ignore[override]
+        self.uploads.append({"method": method, "payload": payload, "files": files})
+        return {"ok": True}
 
 
 def test_normalize_symbol_aliases() -> None:
@@ -178,6 +197,28 @@ def test_webhook_voice_message_returns_voice_reply() -> None:
     assert telegram.messages == []
 
 
+def test_webhook_voice_message_falls_back_to_text_when_tts_fails() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 8,
+                "chat": {"id": 123},
+                "voice": {"file_id": "voice-file-id", "mime_type": "audio/ogg"},
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        _FakeSTT(),  # type: ignore[arg-type]
+        _FailingTTS(),  # type: ignore[arg-type]
+    )
+    assert handled is True
+    assert telegram.voices == []
+    assert "402 Payment Required" in telegram.messages[0]["text"]
+    assert "cevap: altin kac tl" in telegram.messages[0]["text"]
+
+
 def test_webhook_voice_message_warns_when_voice_config_missing() -> None:
     agent = _FakeAgent()
     telegram = _FakeTelegram()
@@ -197,6 +238,30 @@ def test_webhook_voice_message_warns_when_voice_config_missing() -> None:
     assert handled is True
     assert "DEEPGRAM_API_KEY" in telegram.messages[0]["text"]
     assert telegram.voices == []
+
+
+def test_telegram_sends_mp3_tts_as_audio_file() -> None:
+    client = _RecordingTelegramClient(
+        Settings(
+            telegram_bot_token="token",
+            elevenlabs_output_format="mp3_44100_128",
+        )
+    )
+    client.send_voice(chat_id=123, audio=b"mp3")
+    assert client.uploads[0]["method"] == "sendAudio"
+    assert "audio" in client.uploads[0]["files"]
+
+
+def test_telegram_sends_opus_tts_as_voice_note() -> None:
+    client = _RecordingTelegramClient(
+        Settings(
+            telegram_bot_token="token",
+            elevenlabs_output_format="opus_48000_32",
+        )
+    )
+    client.send_voice(chat_id=123, audio=b"opus")
+    assert client.uploads[0]["method"] == "sendVoice"
+    assert "voice" in client.uploads[0]["files"]
 
 
 def test_memory_stores_name_only_when_explicitly_provided() -> None:
