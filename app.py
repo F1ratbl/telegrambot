@@ -17,6 +17,7 @@ from src.bot.webhook import create_telegram_blueprint
 from src.config import Settings
 from src.tools.knowledge_base import KnowledgeBaseTool
 from src.tools.market_data import MarketDataClient
+from src.tools.news import NewsSearchClient
 
 
 load_dotenv()
@@ -35,10 +36,12 @@ def create_app() -> Flask:
     )
     market_data = MarketDataClient(settings)
     knowledge_base = KnowledgeBaseTool(settings)
+    news_search = NewsSearchClient(settings)
     agent = EconomyAgent(
         settings=settings,
         market_data=market_data,
         knowledge_base=knowledge_base,
+        news_search=news_search,
         memory=memory,
     )
     telegram = TelegramClient(settings)

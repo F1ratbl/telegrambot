@@ -9,6 +9,34 @@ class _DummyTool:
     pass
 
 
+class _FakeNews:
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    def search(self, query: str, limit: int | None = None) -> dict:
+        self.queries.append(query)
+        return {
+            "status": "ok",
+            "provider": "fake",
+            "query": query,
+            "items": [
+                {
+                    "title": f"{query} piyasasinda son gelisme",
+                    "summary": f"{query} hakkindaki haber fiyatlamayi etkileyen son gelismeye odaklaniyor.",
+                    "link": "https://example.com/news",
+                }
+            ],
+        }
+
+
+class _FakeMarket:
+    def __init__(self, snapshot: dict) -> None:
+        self.snapshot = snapshot
+
+    def get_snapshot(self, symbols=None) -> dict:
+        return self.snapshot
+
+
 def test_normalize_symbol_aliases() -> None:
     assert normalize_symbol("BIST 100") == "XU100.IS"
     assert normalize_symbol("s&p 500") == "^GSPC"
@@ -313,3 +341,44 @@ def test_extract_text_returns_fallback_only_for_public_helper() -> None:
     response = object()
     assert agent._extract_text_or_none(response) is None
     assert agent._extract_text(response) == "Cevap olusturamadim."
+
+
+def test_news_question_returns_latest_items_without_gemini() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("altin hakkinda haberler neler", chat_id="chat-1")
+    assert "altin icin son haberler:" in answer
+    assert "https://example.com/news" in answer
+    assert news.queries == ["altin"]
+
+
+def test_large_market_move_appends_news() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    market = _FakeMarket(
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "^IXIC",
+                    "name": "Nasdaq Composite",
+                    "price": 24500.0,
+                    "change_percent": 3.2,
+                    "currency": "USD",
+                },
+                {
+                    "symbol": "USDTRY=X",
+                    "name": "USD/TRY",
+                    "price": 45.0,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {},
+        }
+    )
+    agent = EconomyAgent(Settings(google_api_key="test"), market, _DummyTool(), memory, news_search=news)
+    answer = agent.reply("nasdaq ne kadar", chat_id="chat-1")
+    assert "Nasdaq Composite su an yaklasik 24.500,00 USD seviyesinde." in answer
+    assert "Hareket belirgin oldugu icin son haberlerden bazilari:" in answer
+    assert news.queries == ["Nasdaq"]

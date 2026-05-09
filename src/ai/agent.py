@@ -13,6 +13,7 @@ from src.bot.memory import InMemoryConversationMemory
 from src.config import Settings
 from src.tools.knowledge_base import KnowledgeBaseTool
 from src.tools.market_data import MarketDataClient
+from src.tools.news import NewsSearchClient
 
 
 logger = logging.getLogger(__name__)
@@ -36,11 +37,13 @@ class EconomyAgent:
         market_data: MarketDataClient,
         knowledge_base: KnowledgeBaseTool,
         memory: InMemoryConversationMemory,
+        news_search: NewsSearchClient | None = None,
     ) -> None:
         self.settings = settings
         self.market_data = market_data
         self.knowledge_base = knowledge_base
         self.memory = memory
+        self.news_search = news_search or NewsSearchClient(settings)
         self._client = None
 
     def reply(self, user_message: str, chat_id: str | None = None, user_name: str | None = None) -> str:
@@ -48,6 +51,11 @@ class EconomyAgent:
             return "Ekonomiyle ilgili sorunuzu yazarsaniz yardimci olayim."
         if user_message.strip().lower() == "/start":
             return START_MESSAGE
+        clean_message = user_message.strip()
+        if self._is_news_question(clean_message):
+            answer = self._answer_news_question(clean_message, chat_id)
+            self.memory.remember_exchange(chat_id, clean_message, answer)
+            return answer
         if not self.settings.google_api_key:
             return (
                 "Gemini API anahtari henuz tanimli degil. GOOGLE_API_KEY veya "
@@ -55,7 +63,6 @@ class EconomyAgent:
             )
 
         try:
-            clean_message = user_message.strip()
             remembered_name = self._remember_user_name(chat_id, clean_message)
             active_name = remembered_name or self.memory.get_preferred_name(chat_id)
             return self._reply_with_gemini(clean_message, chat_id, active_name)
@@ -75,6 +82,9 @@ class EconomyAgent:
         prefetched_market = self._prefetch_market_snapshot(user_message, chat_id)
         if prefetched_market is not None:
             answer = self._market_snapshot_direct_answer(user_message, prefetched_market, chat_id)
+            news_snapshot = self._news_for_large_market_move(user_message, prefetched_market, chat_id)
+            if news_snapshot:
+                answer = f"{answer}\n\n{self._format_news_snapshot(news_snapshot, heading='Hareket belirgin oldugu icin son haberlerden bazilari:')}"
             self.memory.remember_exchange(chat_id, user_message, answer)
             return answer
 
@@ -268,6 +278,106 @@ class EconomyAgent:
             return "Kullanici Turkce yaziyor. Ozellikle baska bir sey istemedikce yerel fiyat tercihi TL ve altinda varsayilan format gram/TL."
         return "Kullanici Ingilizce veya Turkce disi yaziyor. Ozellikle baska bir sey istemedikce fiyat tercihi USD."
 
+    def _is_news_question(self, user_message: str) -> bool:
+        lowered = user_message.lower()
+        news_markers = [
+            "haber",
+            "haberler",
+            "son gelişmeler",
+            "son gelismeler",
+            "gündem",
+            "gundem",
+            "ne oldu",
+            "neden yükseldi",
+            "neden yukseldi",
+            "neden düştü",
+            "neden dustu",
+        ]
+        return any(marker in lowered for marker in news_markers)
+
+    def _answer_news_question(self, user_message: str, chat_id: str | None) -> str:
+        query = self._news_query_for_message(user_message, chat_id)
+        snapshot = self.news_search.search(query, limit=self.settings.news_max_items)
+        return self._format_news_snapshot(snapshot, heading=f"{query} icin son haberler:")
+
+    def _news_query_for_message(self, user_message: str, chat_id: str | None) -> str:
+        asset = self._infer_active_asset(chat_id, user_message)
+        asset_queries = {
+            "altin": "altin",
+            "gumus": "gumus",
+            "petrol": "petrol",
+            "bitcoin": "bitcoin",
+            "ethereum": "ethereum",
+            "bist100": "BIST 100",
+            "nasdaq": "Nasdaq",
+            "sp500": "S&P 500",
+            "usdtry": "dolar TL",
+            "eurtry": "euro TL",
+        }
+        if asset:
+            return asset_queries.get(asset, asset)
+
+        cleaned = re.sub(
+            r"\b(haberleri|haberler|haber|son|gelişmeler|gelismeler|gündem|gundem|neler|nedir|ne|hakkında|hakkinda)\b",
+            " ",
+            user_message,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ?")
+        return cleaned or "ekonomi piyasalar"
+
+    def _format_news_snapshot(self, snapshot: dict[str, Any], heading: str) -> str:
+        items = snapshot.get("items") or []
+        if not items:
+            return "Su an ilgili konuda guncel haber cekemedim. Biraz sonra tekrar deneyebiliriz."
+
+        lines = [heading]
+        for index, item in enumerate(items[: self.settings.news_max_items], start=1):
+            title = item.get("title") or "Baslik yok"
+            summary = item.get("summary") or "Bu haber ilgili piyasadaki son gelismeye deginiyor."
+            link = item.get("link") or ""
+            lines.append(f"{index}. {title}")
+            lines.append(f"Ozet: {summary}")
+            if link:
+                lines.append(f"Link: {link}")
+        return "\n".join(lines)
+
+    def _news_for_large_market_move(
+        self,
+        user_message: str,
+        snapshot: dict[str, Any],
+        chat_id: str | None,
+    ) -> dict[str, Any] | None:
+        main_quote = self._first_non_currency_quote(snapshot)
+        if not main_quote:
+            main_quote = self._find_quote(snapshot, "USDTRY=X") or self._find_quote(snapshot, "EURTRY=X")
+        if not main_quote:
+            return None
+
+        change_percent = _first_numeric_value(main_quote.get("change_percent"))
+        if change_percent is None:
+            return None
+        if abs(change_percent) < self.settings.news_move_threshold_percent:
+            return None
+
+        query = self._news_query_for_market_quote(main_quote, user_message, chat_id)
+        snapshot = self.news_search.search(query, limit=3)
+        if snapshot.get("status") != "ok":
+            return None
+        return snapshot
+
+    def _news_query_for_market_quote(
+        self,
+        quote: dict[str, Any],
+        user_message: str,
+        chat_id: str | None,
+    ) -> str:
+        asset = self._infer_active_asset(chat_id, user_message)
+        if asset:
+            return self._news_query_for_message(asset, chat_id=None)
+        name = quote.get("name") or quote.get("symbol") or "piyasa"
+        return str(name)
+
     def _prefetch_market_snapshot(self, user_message: str, chat_id: str | None) -> dict[str, Any] | None:
         symbols = self._extract_prefetch_symbols(user_message, chat_id)
         if not symbols:
@@ -460,8 +570,8 @@ class EconomyAgent:
     def _extract_asset_label(self, text: str) -> str | None:
         lowered = text.lower()
         asset_aliases = [
-            ("altin", ["altin", "gold", "xau", "ons altin", "gram altin"]),
-            ("gumus", ["gumus", "silver", "xag"]),
+            ("altin", ["altın", "altin", "gold", "xau", "ons altin", "ons altın", "gram altin", "gram altın"]),
+            ("gumus", ["gümüş", "gumus", "silver", "xag"]),
             ("petrol", ["petrol", "brent", "wti", "oil"]),
             ("bitcoin", ["bitcoin", "btc"]),
             ("ethereum", ["ethereum", "eth"]),
