@@ -296,7 +296,9 @@ class EconomyAgent:
             "neden düştü",
             "neden dustu",
         ]
-        return any(marker in lowered for marker in news_markers)
+        if any(marker in lowered for marker in news_markers):
+            return True
+        return self._is_macro_news_status_question(lowered)
 
     def _answer_news_question(self, user_message: str, chat_id: str | None) -> str:
         query = self._news_query_for_message(user_message, chat_id)
@@ -333,7 +335,8 @@ class EconomyAgent:
                 r"bakabilir|bakar|bak|çeker|ceker|çek|cek|getir|misin|mısın|"
                 r"musun|müsün|var mı|var mi|ilgili|bana|güncel|guncel|bugün|"
                 r"bugun|bugünkü|bugunku|söyler|soyler|söyle|soyle|anlat|"
-                r"verir|ver|lütfen|lutfen)\b"
+                r"verir|ver|lütfen|lutfen|durum|oldu|oluyor|olan|açıklandı|"
+                r"aciklandi)\b"
             ),
             " ",
             normalized_message,
@@ -386,11 +389,70 @@ class EconomyAgent:
             "güncel",
             "piyasa",
             "piyasalar",
+            "piyasalarda",
             "ekonomi",
             "ekonomisi",
+            "ekonomide",
         }
         words = [word.strip(" .,!?:;").lower() for word in text.split()]
         return bool(words) and all(word in generic_words for word in words)
+
+    def _is_macro_news_status_question(self, lowered_message: str) -> bool:
+        if self._extract_asset_label(lowered_message):
+            return False
+        topic_markers = [
+            "abd",
+            "amerika",
+            "avrupa",
+            "çin",
+            "cin",
+            "enflasyon",
+            "faiz",
+            "fed",
+            "tcmb",
+            "merkez bank",
+            "ecb",
+            "tüik",
+            "tuik",
+            "resesyon",
+            "büyüme",
+            "buyume",
+            "işsizlik",
+            "issizlik",
+            "istihdam",
+            "cari açık",
+            "cari acik",
+            "bütçe",
+            "butce",
+            "tahvil",
+            "kredi",
+            "konut",
+            "enerji",
+            "ihracat",
+            "ithalat",
+            "ekonomi",
+            "piyasa",
+            "piyasalar",
+        ]
+        status_markers = [
+            "güncel",
+            "guncel",
+            "son durum",
+            "son gelişme",
+            "son gelisme",
+            "neler oluyor",
+            "ne oluyor",
+            "ne oldu",
+            "gündem",
+            "gundem",
+            "açıklandı",
+            "aciklandi",
+            "karar",
+        ]
+        return self._mentions_any(lowered_message, topic_markers) and self._mentions_any(
+            lowered_message,
+            status_markers,
+        )
 
     def _format_news_snapshot(self, snapshot: dict[str, Any], heading: str) -> str:
         items = snapshot.get("items") or []

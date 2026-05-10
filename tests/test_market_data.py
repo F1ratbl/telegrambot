@@ -639,6 +639,30 @@ def test_news_query_cleans_economic_topic_request() -> None:
     assert query == "ABD enflasyon"
 
 
+def test_macro_status_question_is_treated_as_news_without_news_word() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("ABD enflasyon son durum ne", chat_id="chat-1")
+    assert "ABD enflasyon icin son haberler:" in answer
+    assert news.queries == ["ABD enflasyon"]
+
+
+def test_generic_market_status_question_uses_general_news_query() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("piyasalarda son durum ne", chat_id="chat-1")
+    assert "ekonomi piyasalar icin son haberler:" in answer
+    assert news.queries == ["ekonomi piyasalar"]
+
+
+def test_asset_status_question_stays_out_of_news_without_news_word() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent._is_news_question("altın son durum ne") is False
+
+
 def test_amd_news_question_uses_amd_query() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
