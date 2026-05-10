@@ -1,5 +1,5 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
-from src.tools.news import NewsItem, NewsSearchClient, _filter_relevant_items
+from src.tools.news import NewsItem, NewsSearchClient, _filter_relevant_items, _rss_query_candidates
 from src.bot.telegram import TelegramClient, _sanitize_telegram_text
 from src.bot.webhook import _handle_update
 from src.bot.memory import InMemoryConversationMemory
@@ -731,3 +731,70 @@ def test_news_filter_removes_irrelevant_asset_items() -> None:
 
     assert len(filtered) == 1
     assert filtered[0].link == "https://example.com/amd"
+
+
+def test_news_filter_removes_social_sources() -> None:
+    items = [
+        NewsItem(
+            title="Borsada piyasa değeri en yüksek şirketler",
+            link="https://instagram.com/example-post",
+            source="instagram.com",
+            published_at=None,
+            summary="Sosyal medya paylaşımı.",
+        ),
+        NewsItem(
+            title="Piyasalarda gün ortası",
+            link="https://example.com/news",
+            source="Ekonomi Kaynağı",
+            published_at=None,
+            summary="Piyasalarda gün ortası gelişmeleri takip ediliyor.",
+        ),
+    ]
+
+    filtered = _filter_relevant_items("ekonomi piyasalar", items)
+
+    assert len(filtered) == 1
+    assert filtered[0].link == "https://example.com/news"
+
+
+def test_turkey_economy_news_query_uses_resilient_candidates() -> None:
+    candidates = _rss_query_candidates("türkiye güncel ekonomi")
+
+    assert candidates[0] == "Türkiye ekonomi piyasalar when:7d"
+    assert "Türkiye ekonomi when:7d" in candidates
+    assert '"türkiye güncel ekonomi"' not in candidates[0]
+
+
+def test_news_search_falls_back_when_primary_query_fails() -> None:
+    class FallbackNewsSearch(NewsSearchClient):
+        def __init__(self) -> None:
+            super().__init__(Settings())
+            self.queries: list[str] = []
+
+        def _fetch_rss_xml(self, rss_query: str) -> str:
+            self.queries.append(rss_query)
+            if len(self.queries) == 1:
+                raise RuntimeError("503 Server Error")
+            return """
+            <rss><channel>
+              <item>
+                <title>Türkiye ekonomisinde güncel gelişmeler - Kaynak</title>
+                <link>https://news.google.com/rss/articles/example</link>
+                <description>Türkiye ekonomisinde güncel gelişmeler piyasaların odağında.</description>
+                <source>Kaynak</source>
+              </item>
+            </channel></rss>
+            """
+
+        def _fetch_article_text(self, link: str) -> tuple[str | None, str]:
+            return link, ""
+
+    client = FallbackNewsSearch()
+    snapshot = client.search("türkiye güncel ekonomi", limit=1)
+
+    assert snapshot["status"] == "ok"
+    assert client.queries[:2] == [
+        "Türkiye ekonomi piyasalar when:7d",
+        "Türkiye ekonomi when:7d",
+    ]
+    assert snapshot["items"][0]["title"] == "Türkiye ekonomisinde güncel gelişmeler - Kaynak"

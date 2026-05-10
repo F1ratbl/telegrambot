@@ -4,6 +4,7 @@ import html
 from html.parser import HTMLParser
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -36,38 +37,68 @@ class NewsSearchClient:
         self.settings = settings
 
     def search(self, query: str, limit: int | None = None) -> dict[str, Any]:
-        import requests
-
         clean_query = query.strip()
         max_items = max(1, min(limit or self.settings.news_max_items, 10))
-        rss_query = quote_plus(_build_rss_query(clean_query))
-        url = f"{self.google_news_url}?q={rss_query}&hl=tr&gl=TR&ceid=TR:tr"
-        try:
-            response = requests.get(
-                url,
-                headers={"User-Agent": "telegram-economy-ai/1.0"},
-                timeout=self.settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
+        errors: list[str] = []
+        any_success = False
+
+        for rss_query in _rss_query_candidates(clean_query):
+            try:
+                xml_text = self._fetch_rss_xml(rss_query)
+                any_success = True
+            except Exception as exc:
+                logger.warning("Could not fetch news for %s with query %s: %s", clean_query, rss_query, exc)
+                errors.append(f"{rss_query}: {exc}")
+                continue
+
             parse_limit = min(10, max_items + 5) if _relevance_terms(clean_query) else max_items
-            items = self._parse_items(response.text, parse_limit)
+            items = self._parse_items(xml_text, parse_limit)
             items = _filter_relevant_items(clean_query, items)[:max_items]
-            return {
-                "status": "ok" if items else "empty",
-                "provider": "Google News RSS",
-                "query": clean_query,
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "items": [item.to_dict() for item in items],
-            }
-        except Exception as exc:
-            logger.warning("Could not fetch news for %s: %s", clean_query, exc)
-            return {
-                "status": "error",
-                "provider": "Google News RSS",
-                "query": clean_query,
-                "items": [],
-                "error": str(exc),
-            }
+            if items:
+                return {
+                    "status": "ok",
+                    "provider": "Google News RSS",
+                    "query": clean_query,
+                    "rss_query": rss_query,
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "items": [item.to_dict() for item in items],
+                }
+            errors.append(f"{rss_query}: empty result")
+
+        return {
+            "status": "empty" if any_success else "error",
+            "provider": "Google News RSS",
+            "query": clean_query,
+            "items": [],
+            "error": "; ".join(errors),
+        }
+
+    def _fetch_rss_xml(self, rss_query: str) -> str:
+        import requests
+
+        encoded_query = quote_plus(rss_query)
+        url = f"{self.google_news_url}?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
+        last_exception: Exception | None = None
+        for attempt in range(2):
+            try:
+                response = requests.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 telegram-economy-ai/1.0"},
+                    timeout=self.settings.request_timeout_seconds,
+                )
+                if response.status_code in {429, 500, 502, 503, 504} and attempt == 0:
+                    time.sleep(0.4)
+                    continue
+                response.raise_for_status()
+                return response.text
+            except Exception as exc:
+                last_exception = exc
+                if attempt == 0:
+                    time.sleep(0.4)
+                    continue
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("Google News RSS did not return a response.")
 
     def _parse_items(self, xml_text: str, limit: int) -> list[NewsItem]:
         root = ElementTree.fromstring(xml_text)
@@ -229,6 +260,10 @@ def _remove_title_overlap(text: str, title: str) -> str:
 def _build_rss_query(query: str) -> str:
     clean = query.strip()
     lowered = clean.lower()
+    if _is_turkey_economy_query(lowered):
+        return "Türkiye ekonomi piyasalar when:7d"
+    if _is_general_economy_query(lowered):
+        return "ekonomi piyasalar Türkiye when:7d"
     aliases = {
         "amd": '"AMD" stock shares earnings AI',
         "bitcoin": '"bitcoin" crypto price ETF market',
@@ -248,7 +283,45 @@ def _build_rss_query(query: str) -> str:
     return f'"{clean}" ekonomi finans piyasa when:7d'
 
 
+def _rss_query_candidates(query: str) -> list[str]:
+    candidates = [_build_rss_query(query)]
+    for fallback in _fallback_rss_queries(query):
+        if fallback not in candidates:
+            candidates.append(fallback)
+    return candidates
+
+
+def _fallback_rss_queries(query: str) -> list[str]:
+    lowered = query.lower()
+    if _is_turkey_economy_query(lowered):
+        return [
+            "Türkiye ekonomi when:7d",
+            "ekonomi piyasalar Türkiye when:7d",
+            "ekonomi piyasalar when:7d",
+        ]
+    if _is_general_economy_query(lowered):
+        return [
+            "ekonomi piyasalar when:7d",
+            "Türkiye ekonomi when:7d",
+        ]
+    return []
+
+
+def _is_turkey_economy_query(lowered_query: str) -> bool:
+    return (
+        any(token in lowered_query for token in ["türkiye", "turkiye"])
+        and any(token in lowered_query for token in ["ekonomi", "piyasa", "finans"])
+    )
+
+
+def _is_general_economy_query(lowered_query: str) -> bool:
+    return any(token in lowered_query for token in ["ekonomi", "piyasa", "finans"]) and not _relevance_terms(
+        lowered_query
+    )
+
+
 def _filter_relevant_items(query: str, items: list[NewsItem]) -> list[NewsItem]:
+    items = [item for item in items if not _is_blocked_news_item(item)]
     terms = _relevance_terms(query)
     if not terms:
         return items
@@ -260,6 +333,20 @@ def _filter_relevant_items(query: str, items: list[NewsItem]) -> list[NewsItem]:
         if any(term in haystack for term in terms):
             filtered.append(item)
     return filtered
+
+
+def _is_blocked_news_item(item: NewsItem) -> bool:
+    blocked_hosts = {
+        "instagram.com",
+        "facebook.com",
+        "x.com",
+        "twitter.com",
+        "tiktok.com",
+        "youtube.com",
+    }
+    host = urlparse(item.link).netloc.lower().replace("www.", "")
+    source = (item.source or "").lower()
+    return any(blocked in host or blocked in source for blocked in blocked_hosts)
 
 
 def _relevance_terms(query: str) -> list[str]:
