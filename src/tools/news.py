@@ -260,6 +260,8 @@ def _remove_title_overlap(text: str, title: str) -> str:
 def _build_rss_query(query: str) -> str:
     clean = query.strip()
     lowered = clean.lower()
+    if _is_specific_economy_query(lowered):
+        return f"{_topic_search_base(clean)} when:7d"
     if _is_turkey_economy_query(lowered):
         return "Türkiye ekonomi piyasalar when:7d"
     if _is_general_economy_query(lowered):
@@ -293,6 +295,17 @@ def _rss_query_candidates(query: str) -> list[str]:
 
 def _fallback_rss_queries(query: str) -> list[str]:
     lowered = query.lower()
+    if _is_specific_economy_query(lowered):
+        base = _topic_search_base(query)
+        fallbacks = [
+            f"{base} ekonomi when:7d",
+            f"{base} finans piyasalar when:7d",
+            f"{base} when:30d",
+        ]
+        if "türkiye" in lowered or "turkiye" in lowered:
+            fallbacks.append("Türkiye ekonomi piyasalar when:7d")
+        fallbacks.append("ekonomi piyasalar when:7d")
+        return fallbacks
     if _is_turkey_economy_query(lowered):
         return [
             "Türkiye ekonomi when:7d",
@@ -307,17 +320,115 @@ def _fallback_rss_queries(query: str) -> list[str]:
     return []
 
 
+def _is_specific_economy_query(lowered_query: str) -> bool:
+    if _is_turkey_economy_query(lowered_query) and not _is_economic_topic_query(lowered_query):
+        return False
+    return _is_economic_topic_query(lowered_query) or (
+        _contains_economy_word(lowered_query) and not _is_general_economy_query(lowered_query)
+    )
+
+
 def _is_turkey_economy_query(lowered_query: str) -> bool:
     return (
         any(token in lowered_query for token in ["türkiye", "turkiye"])
-        and any(token in lowered_query for token in ["ekonomi", "piyasa", "finans"])
+        and _contains_economy_word(lowered_query)
     )
 
 
 def _is_general_economy_query(lowered_query: str) -> bool:
-    return any(token in lowered_query for token in ["ekonomi", "piyasa", "finans"]) and not _relevance_terms(
-        lowered_query
-    )
+    words = _query_words(lowered_query)
+    if not words:
+        return False
+    generic_words = {
+        "ekonomi",
+        "ekonomisi",
+        "ekonomik",
+        "piyasa",
+        "piyasalar",
+        "finans",
+        "finansal",
+        "guncel",
+        "güncel",
+        "haber",
+        "haberleri",
+    }
+    return all(word in generic_words for word in words) and not _relevance_terms(lowered_query)
+
+
+def _contains_economy_word(lowered_query: str) -> bool:
+    return any(token in lowered_query for token in ["ekonomi", "ekonomik", "piyasa", "finans"])
+
+
+def _is_economic_topic_query(lowered_query: str) -> bool:
+    topic_markers = [
+        "abd",
+        "amerika",
+        "enflasyon",
+        "inflation",
+        "faiz",
+        "fed",
+        "merkez bank",
+        "tcmb",
+        "ecb",
+        "tüik",
+        "tuik",
+        "resesyon",
+        "recession",
+        "büyüme",
+        "buyume",
+        "gdp",
+        "işsizlik",
+        "issizlik",
+        "istihdam",
+        "tarım dışı",
+        "tarim disi",
+        "cpi",
+        "ppi",
+        "tüfe",
+        "tufe",
+        "üfe",
+        "ufe",
+        "cari açık",
+        "cari acik",
+        "bütçe",
+        "butce",
+        "vergi",
+        "tahvil",
+        "bono",
+        "kredi",
+        "mevduat",
+        "döviz",
+        "doviz",
+        "kur",
+        "emtia",
+        "enerji",
+        "doğalgaz",
+        "dogalgaz",
+        "konut",
+        "mortgage",
+        "ihracat",
+        "ithalat",
+        "ticaret",
+    ]
+    return any(marker in lowered_query for marker in topic_markers)
+
+
+def _topic_search_base(query: str) -> str:
+    replacements = {
+        "abd": "ABD",
+        "fed": "Fed",
+        "tcmb": "TCMB",
+        "tüik": "TÜİK",
+        "tuik": "TÜİK",
+        "ecb": "ECB",
+    }
+    words = [replacements.get(word.lower(), word) for word in _query_words(query)]
+    return " ".join(words) or query.strip()
+
+
+def _query_words(query: str) -> list[str]:
+    cleaned = re.sub(r"[^\wçğıöşüÇĞİÖŞÜ&]+", " ", query, flags=re.UNICODE)
+    return [word.strip().lower() for word in cleaned.split() if word.strip()]
 
 
 def _filter_relevant_items(query: str, items: list[NewsItem]) -> list[NewsItem]:

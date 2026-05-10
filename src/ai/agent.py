@@ -280,7 +280,7 @@ class EconomyAgent:
         return "Kullanici Ingilizce veya Turkce disi yaziyor. Ozellikle baska bir sey istemedikce fiyat tercihi USD."
 
     def _is_news_question(self, user_message: str) -> bool:
-        lowered = user_message.lower()
+        lowered = self._normalize_news_text(user_message).lower()
         if "neden" in lowered and any(marker in lowered for marker in ["yükseldi", "yukseldi", "düştü", "dustu"]):
             return True
         news_markers = [
@@ -304,7 +304,8 @@ class EconomyAgent:
         return self._format_news_snapshot(snapshot, heading=f"{query} icin son haberler:")
 
     def _news_query_for_message(self, user_message: str, chat_id: str | None) -> str:
-        asset = self._infer_active_asset(chat_id, user_message)
+        normalized_message = self._normalize_news_text(user_message)
+        asset = self._infer_active_asset(chat_id, normalized_message)
         asset_queries = {
             "altin": "altin",
             "gumus": "gumus",
@@ -330,16 +331,38 @@ class EconomyAgent:
                 r"\b(haberlerine|haberleri|haberlere|haberler|haber|son|gelişmeler|"
                 r"gelismeler|gündem|gundem|neler|nedir|ne|hakkında|hakkinda|"
                 r"bakabilir|bakar|bak|çeker|ceker|çek|cek|getir|misin|mısın|"
-                r"musun|müsün|var mı|var mi|ilgili|bana)\b"
+                r"musun|müsün|var mı|var mi|ilgili|bana|güncel|guncel|bugün|"
+                r"bugun|bugünkü|bugunku|söyler|soyler|söyle|soyle|anlat|"
+                r"verir|ver|lütfen|lutfen)\b"
             ),
             " ",
-            user_message,
+            normalized_message,
             flags=re.IGNORECASE,
         )
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ?")
         if not cleaned or self._is_generic_news_phrase(cleaned):
             return "ekonomi piyasalar"
-        return cleaned
+        return self._normalize_news_query(cleaned)
+
+    def _normalize_news_text(self, text: str) -> str:
+        normalized = re.sub(r"\bahber", "haber", text, flags=re.IGNORECASE)
+        normalized = re.sub(r"\bahbar", "haber", normalized, flags=re.IGNORECASE)
+        return normalized
+
+    def _normalize_news_query(self, text: str) -> str:
+        replacements = {
+            "abd": "ABD",
+            "fed": "Fed",
+            "tcmb": "TCMB",
+            "tüik": "TÜİK",
+            "tuik": "TÜİK",
+            "ecb": "ECB",
+        }
+        words = []
+        for word in text.split():
+            clean = word.strip(" .,!?:;")
+            words.append(replacements.get(clean.lower(), clean))
+        return " ".join(word for word in words if word)
 
     def _is_generic_news_phrase(self, text: str) -> bool:
         generic_words = {
@@ -364,6 +387,7 @@ class EconomyAgent:
             "piyasa",
             "piyasalar",
             "ekonomi",
+            "ekonomisi",
         }
         words = [word.strip(" .,!?:;").lower() for word in text.split()]
         return bool(words) and all(word in generic_words for word in words)

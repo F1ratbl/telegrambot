@@ -620,6 +620,25 @@ def test_generic_news_fetch_request_uses_economy_market_query_without_context() 
     assert news.queries == ["ekonomi piyasalar"]
 
 
+def test_news_question_handles_common_haber_typo() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("güncel ekonomi ahberleri neler", chat_id="chat-1")
+    assert "ekonomi piyasalar icin son haberler:" in answer
+    assert news.queries == ["ekonomi piyasalar"]
+
+
+def test_news_query_cleans_economic_topic_request() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory)
+    query = agent._news_query_for_message(
+        "abd enflasyon hakkında güncel haberleri söyler misin",
+        "chat-1",
+    )
+    assert query == "ABD enflasyon"
+
+
 def test_amd_news_question_uses_amd_query() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
@@ -763,6 +782,21 @@ def test_turkey_economy_news_query_uses_resilient_candidates() -> None:
     assert candidates[0] == "Türkiye ekonomi piyasalar when:7d"
     assert "Türkiye ekonomi when:7d" in candidates
     assert '"türkiye güncel ekonomi"' not in candidates[0]
+
+
+def test_specific_economic_topic_uses_topic_candidates() -> None:
+    candidates = _rss_query_candidates("ABD enflasyon")
+
+    assert candidates[0] == "ABD enflasyon when:7d"
+    assert "ABD enflasyon ekonomi when:7d" in candidates
+    assert "ABD enflasyon when:30d" in candidates
+
+
+def test_regional_economy_topic_uses_specific_candidates() -> None:
+    candidates = _rss_query_candidates("çin ekonomisi")
+
+    assert candidates[0] == "çin ekonomisi when:7d"
+    assert "çin ekonomisi finans piyasalar when:7d" in candidates
 
 
 def test_news_search_falls_back_when_primary_query_fails() -> None:
