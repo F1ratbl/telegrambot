@@ -326,13 +326,47 @@ class EconomyAgent:
             return asset_queries.get(asset, asset)
 
         cleaned = re.sub(
-            r"\b(haberleri|haberler|haber|son|gelişmeler|gelismeler|gündem|gundem|neler|nedir|ne|hakkında|hakkinda)\b",
+            (
+                r"\b(haberlerine|haberleri|haberlere|haberler|haber|son|gelişmeler|"
+                r"gelismeler|gündem|gundem|neler|nedir|ne|hakkında|hakkinda|"
+                r"bakabilir|bakar|bak|çeker|ceker|çek|cek|getir|misin|mısın|"
+                r"musun|müsün|var mı|var mi|ilgili|bana)\b"
+            ),
             " ",
             user_message,
             flags=re.IGNORECASE,
         )
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" ?")
-        return cleaned or "ekonomi piyasalar"
+        if not cleaned or self._is_generic_news_phrase(cleaned):
+            return "ekonomi piyasalar"
+        return cleaned
+
+    def _is_generic_news_phrase(self, text: str) -> bool:
+        generic_words = {
+            "haber",
+            "haberler",
+            "haberlere",
+            "haberleri",
+            "bak",
+            "bakar",
+            "cek",
+            "ceker",
+            "çek",
+            "çeker",
+            "getir",
+            "misin",
+            "mısın",
+            "musun",
+            "müsün",
+            "son",
+            "guncel",
+            "güncel",
+            "piyasa",
+            "piyasalar",
+            "ekonomi",
+        }
+        words = [word.strip(" .,!?:;").lower() for word in text.split()]
+        return bool(words) and all(word in generic_words for word in words)
 
     def _format_news_snapshot(self, snapshot: dict[str, Any], heading: str) -> str:
         items = snapshot.get("items") or []

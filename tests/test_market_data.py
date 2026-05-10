@@ -1,5 +1,5 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
-from src.tools.news import NewsSearchClient
+from src.tools.news import NewsItem, NewsSearchClient, _filter_relevant_items
 from src.bot.telegram import TelegramClient, _sanitize_telegram_text
 from src.bot.webhook import _handle_update
 from src.bot.memory import InMemoryConversationMemory
@@ -602,6 +602,24 @@ def test_news_followup_uses_previous_amd_context() -> None:
     assert news.queries == ["AMD"]
 
 
+def test_generic_news_request_uses_economy_market_query_without_context() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("haberlere bakar mısın", chat_id="chat-1")
+    assert "ekonomi piyasalar icin son haberler:" in answer
+    assert news.queries == ["ekonomi piyasalar"]
+
+
+def test_generic_news_fetch_request_uses_economy_market_query_without_context() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply("haber çeker misin", chat_id="chat-1")
+    assert "ekonomi piyasalar icin son haberler:" in answer
+    assert news.queries == ["ekonomi piyasalar"]
+
+
 def test_amd_news_question_uses_amd_query() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
@@ -689,3 +707,27 @@ def test_news_summary_ignores_generic_google_description() -> None:
     items = client._parse_items(rss, 1)
     assert "Comprehensive up-to-date" not in items[0].summary
     assert "barış iyimserliği" in items[0].summary
+
+
+def test_news_filter_removes_irrelevant_asset_items() -> None:
+    items = [
+        NewsItem(
+            title="Why Microsoft stock is underperforming today",
+            link="https://example.com/msft",
+            source="Example",
+            published_at=None,
+            summary="Microsoft shares lagged the broader market.",
+        ),
+        NewsItem(
+            title="Chip stocks rally after AMD's blowout report",
+            link="https://example.com/amd",
+            source="Example",
+            published_at=None,
+            summary="AMD results supported sentiment across semiconductor names.",
+        ),
+    ]
+
+    filtered = _filter_relevant_items("AMD", items)
+
+    assert len(filtered) == 1
+    assert filtered[0].link == "https://example.com/amd"

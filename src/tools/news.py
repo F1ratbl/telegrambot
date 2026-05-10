@@ -49,7 +49,9 @@ class NewsSearchClient:
                 timeout=self.settings.request_timeout_seconds,
             )
             response.raise_for_status()
-            items = self._parse_items(response.text, max_items)
+            parse_limit = min(10, max_items + 5) if _relevance_terms(clean_query) else max_items
+            items = self._parse_items(response.text, parse_limit)
+            items = _filter_relevant_items(clean_query, items)[:max_items]
             return {
                 "status": "ok" if items else "empty",
                 "provider": "Google News RSS",
@@ -244,6 +246,50 @@ def _build_rss_query(query: str) -> str:
         if key in lowered:
             return f"{value} when:7d"
     return f'"{clean}" ekonomi finans piyasa when:7d'
+
+
+def _filter_relevant_items(query: str, items: list[NewsItem]) -> list[NewsItem]:
+    terms = _relevance_terms(query)
+    if not terms:
+        return items
+    filtered = []
+    for item in items:
+        haystack = " ".join(
+            part for part in [item.title, item.summary, item.source or ""] if part
+        ).lower()
+        if any(term in haystack for term in terms):
+            filtered.append(item)
+    return filtered
+
+
+def _relevance_terms(query: str) -> list[str]:
+    lowered = query.lower()
+    term_map = {
+        "amd": ["amd", "advanced micro devices"],
+        "nvidia": ["nvidia", "nvda"],
+        "nvda": ["nvidia", "nvda"],
+        "apple": ["apple", "aapl"],
+        "aapl": ["apple", "aapl"],
+        "tesla": ["tesla", "tsla"],
+        "tsla": ["tesla", "tsla"],
+        "microsoft": ["microsoft", "msft"],
+        "msft": ["microsoft", "msft"],
+        "altin": ["altin", "altın", "gold", "ons", "gram"],
+        "altın": ["altin", "altın", "gold", "ons", "gram"],
+        "gumus": ["gumus", "gümüş", "silver"],
+        "gümüş": ["gumus", "gümüş", "silver"],
+        "bitcoin": ["bitcoin", "btc"],
+        "ethereum": ["ethereum", "eth"],
+        "nasdaq": ["nasdaq"],
+        "s&p 500": ["s&p 500", "sp 500", "s&p", "sp500"],
+        "sp500": ["s&p 500", "sp 500", "s&p", "sp500"],
+        "bist 100": ["bist 100", "bist100", "bist"],
+        "petrol": ["petrol", "brent", "oil"],
+    }
+    for key, terms in term_map.items():
+        if key in lowered:
+            return terms
+    return []
 
 
 def _is_generic_google_text(text: str) -> bool:
