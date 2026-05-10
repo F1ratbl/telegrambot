@@ -337,6 +337,12 @@ def test_prefetch_symbols_uses_active_asset_for_try_conversion_followup() -> Non
     assert agent._extract_prefetch_symbols("kaç tl ediyor", "chat-1") == ["GOLD"]
 
 
+def test_prefetch_symbols_detects_broad_gold_status_question() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    assert agent._extract_prefetch_symbols("Altınla ilgili son durum nedir", "chat-1") == ["GOLD"]
+
+
 def test_fetch_quote_falls_back_to_chart_when_quote_endpoint_fails() -> None:
     client = MarketDataClient(Settings())
 
@@ -394,6 +400,36 @@ def test_market_snapshot_direct_answer_answers_gold_try() -> None:
         },
     )
     assert answer == "Gram altin su an yaklasik 4.115,30 TL seviyesinde."
+
+
+def test_market_snapshot_direct_answer_answers_broad_gold_status() -> None:
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    answer = agent._market_snapshot_direct_answer(
+        "Altınla ilgili son durum nedir",
+        {
+            "status": "ok",
+            "quotes": [
+                {
+                    "symbol": "GC=F",
+                    "name": "Gold Futures",
+                    "price": 3200.0,
+                    "currency": "USD",
+                },
+                {
+                    "symbol": "USDTRY=X",
+                    "name": "USD/TRY",
+                    "price": 40.0,
+                    "currency": "TRY",
+                },
+            ],
+            "derived_metrics": {
+                "gold_ounce_usd": 3200.0,
+                "gold_gram_try_estimate": 4115.3,
+            },
+        },
+    )
+    assert answer == "Son erisilebilir veriye gore altinda gram fiyat yaklasik 4.115,30 TL, ons fiyat ise yaklasik 3.200,00 USD seviyesinde."
 
 
 def test_market_snapshot_direct_answer_uses_gold_ounce_for_followup() -> None:

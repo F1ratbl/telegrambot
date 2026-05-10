@@ -477,6 +477,15 @@ class EconomyAgent:
             "gram",
             "ons",
             "ounce",
+            "son durum",
+            "ne durumda",
+            "durum ne",
+            "seyir",
+            "seyrediyor",
+            "seviye",
+            "seviyesi",
+            "islem",
+            "işlem",
             "kilo",
             "kilosu",
             "kg",
@@ -487,6 +496,21 @@ class EconomyAgent:
         if not any(marker in lowered for marker in price_markers) and len(lowered.split()) > 3:
             return []
         return list(dict.fromkeys(symbols))
+
+    def _is_broad_market_status_question(self, lowered_message: str) -> bool:
+        return self._mentions_any(
+            lowered_message,
+            [
+                "son durum",
+                "ne durumda",
+                "durum ne",
+                "piyasa",
+                "guncel durum",
+                "güncel durum",
+                "seyir",
+                "seyrediyor",
+            ],
+        )
 
     def _mentions_any(self, text: str, options: list[str]) -> bool:
         return any(option in text for option in options)
@@ -682,6 +706,21 @@ class EconomyAgent:
         )
 
         if gold_request:
+            if self._is_broad_market_status_question(lowered):
+                gram_try = _first_numeric_value(derived.get("gold_gram_try_estimate"))
+                ounce_usd = _first_numeric_value(derived.get("gold_ounce_usd"))
+                if ounce_usd is None:
+                    ounce_usd = _first_numeric_value(gold_quote.get("price"))
+                if gram_try is not None and ounce_usd is not None:
+                    return (
+                        "Son erisilebilir veriye gore altinda gram fiyat yaklasik "
+                        f"{self._format_number(gram_try)} TL, ons fiyat ise yaklasik "
+                        f"{self._format_number(ounce_usd)} USD seviyesinde."
+                    )
+                if gram_try is not None:
+                    return f"Son erisilebilir veriye gore altinda gram fiyat yaklasik {self._format_number(gram_try)} TL seviyesinde."
+                if ounce_usd is not None:
+                    return f"Son erisilebilir veriye gore altinda ons fiyat yaklasik {self._format_number(ounce_usd)} USD seviyesinde."
             if active_unit == "ons" and wants_try:
                 value = _first_numeric_value(derived.get("gold_ounce_try_estimate"))
                 if value is not None:
