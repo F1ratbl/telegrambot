@@ -40,6 +40,28 @@ class _FakeMarket:
         return self.snapshot
 
 
+class _FakeGeminiResponse:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.candidates = []
+        self.function_calls = []
+
+
+class _RecordingGeminiModels:
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    def generate_content(self, model, contents, config):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        return _FakeGeminiResponse(self.reply)
+
+
+class _FakeGeminiClient:
+    def __init__(self, reply: str) -> None:
+        self.models = _RecordingGeminiModels(reply)
+
+
 class _FakeAgent:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -120,6 +142,16 @@ class _RecordingTelegramClient(TelegramClient):
     def _post_file(self, method, payload, files):  # type: ignore[override]
         self.uploads.append({"method": method, "payload": payload, "files": files})
         return {"ok": True}
+
+
+def _joined_gemini_content_text(contents: list) -> str:
+    chunks = []
+    for content in contents:
+        for part in getattr(content, "parts", []) or []:
+            text = getattr(part, "text", None)
+            if text:
+                chunks.append(text)
+    return "\n".join(chunks)
 
 
 def test_normalize_symbol_aliases() -> None:
@@ -372,21 +404,23 @@ def test_fetch_quote_falls_back_to_chart_when_quote_endpoint_fails() -> None:
     assert quote.price == 3200.0
 
 
-def test_market_snapshot_direct_answer_answers_gold_try() -> None:
+def test_prefetched_market_snapshot_is_sent_to_gemini_for_reply() -> None:
     memory = InMemoryConversationMemory()
-    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_direct_answer(
-        "altın kaç tl",
+    market = _FakeMarket(
         {
             "status": "ok",
+            "provider": "fake market",
+            "fetched_at": "2026-05-11T09:00:00+00:00",
             "quotes": [
                 {
+                    "requested_symbol": "GOLD",
                     "symbol": "GC=F",
                     "name": "Gold Futures",
                     "price": 3200.0,
                     "currency": "USD",
                 },
                 {
+                    "requested_symbol": "USDTRY",
                     "symbol": "USDTRY=X",
                     "name": "USD/TRY",
                     "price": 40.0,
@@ -397,181 +431,20 @@ def test_market_snapshot_direct_answer_answers_gold_try() -> None:
                 "gold_ounce_usd": 3200.0,
                 "gold_gram_try_estimate": 4115.3,
             },
-        },
+        }
     )
-    assert answer == "Gram altin su an yaklasik 4.115,30 TL seviyesinde."
+    agent = EconomyAgent(Settings(google_api_key="test"), market, _DummyTool(), memory)
+    fake_gemini = _FakeGeminiClient("Model gram altini dogal bir dille anlatti.")
+    agent._client = fake_gemini
 
+    answer = agent.reply("altın kaç tl", chat_id="chat-1")
 
-def test_market_snapshot_direct_answer_answers_broad_gold_status() -> None:
-    memory = InMemoryConversationMemory()
-    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_direct_answer(
-        "Altınla ilgili son durum nedir",
-        {
-            "status": "ok",
-            "quotes": [
-                {
-                    "symbol": "GC=F",
-                    "name": "Gold Futures",
-                    "price": 3200.0,
-                    "currency": "USD",
-                },
-                {
-                    "symbol": "USDTRY=X",
-                    "name": "USD/TRY",
-                    "price": 40.0,
-                    "currency": "TRY",
-                },
-            ],
-            "derived_metrics": {
-                "gold_ounce_usd": 3200.0,
-                "gold_gram_try_estimate": 4115.3,
-            },
-        },
-    )
-    assert answer == "Son erisilebilir veriye gore altinda gram fiyat yaklasik 4.115,30 TL, ons fiyat ise yaklasik 3.200,00 USD seviyesinde."
-
-
-def test_market_snapshot_direct_answer_uses_gold_ounce_for_followup() -> None:
-    memory = InMemoryConversationMemory()
-    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_direct_answer(
-        "onsu ne kadar",
-        {
-            "status": "ok",
-            "quotes": [
-                {
-                    "symbol": "GC=F",
-                    "name": "Gold Futures",
-                    "price": 4718.2,
-                    "currency": "USD",
-                },
-                {
-                    "symbol": "USDTRY=X",
-                    "name": "USD/TRY",
-                    "price": 45.364,
-                    "currency": "TRY",
-                },
-            ],
-            "derived_metrics": {
-                "gold_ounce_usd": 4718.2,
-                "gold_gram_try_estimate": 6881.4257,
-            },
-        },
-    )
-    assert answer == "Altinin ons fiyati su an yaklasik 4.718,20 USD seviyesinde."
-
-
-def test_market_snapshot_direct_answer_converts_previous_gold_ounce_to_try() -> None:
-    memory = InMemoryConversationMemory()
-    memory.remember_exchange("chat-1", "ons altin ne kadar", "Altinin ons fiyati...")
-    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_direct_answer(
-        "kaç tl ediyor",
-        {
-            "status": "ok",
-            "quotes": [
-                {
-                    "symbol": "GC=F",
-                    "name": "Gold Futures",
-                    "price": 4718.2,
-                    "currency": "USD",
-                },
-                {
-                    "symbol": "USDTRY=X",
-                    "name": "USD/TRY",
-                    "price": 45.364,
-                    "currency": "TRY",
-                },
-            ],
-            "derived_metrics": {
-                "gold_ounce_usd": 4718.2,
-                "gold_ounce_try_estimate": 214061.39,
-                "gold_gram_try_estimate": 6881.4257,
-            },
-        },
-        chat_id="chat-1",
-    )
-    assert answer == "Altinin ons fiyati su an yaklasik 214.061,39 TL seviyesinde."
-
-
-def test_market_snapshot_direct_answer_converts_usd_index_to_try() -> None:
-    memory = InMemoryConversationMemory()
-    memory.remember_exchange("chat-1", "nasdaq ne kadar", "Nasdaq Composite...")
-    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_direct_answer(
-        "kaç tl ediyor",
-        {
-            "status": "ok",
-            "quotes": [
-                {
-                    "symbol": "^IXIC",
-                    "name": "Nasdaq Composite",
-                    "price": 24500.0,
-                    "currency": "USD",
-                },
-                {
-                    "symbol": "USDTRY=X",
-                    "name": "USD/TRY",
-                    "price": 45.0,
-                    "currency": "TRY",
-                },
-            ],
-            "derived_metrics": {},
-        },
-        chat_id="chat-1",
-    )
-    assert answer == "Nasdaq Composite TL karsiligi su an yaklasik 1.102.500,00 TL seviyesinde."
-
-
-def test_market_snapshot_direct_answer_keeps_bist_in_try() -> None:
-    memory = InMemoryConversationMemory()
-    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_direct_answer(
-        "bist100 kaç tl",
-        {
-            "status": "ok",
-            "quotes": [
-                {
-                    "symbol": "XU100.IS",
-                    "name": "BIST 100",
-                    "price": 12000.5,
-                    "currency": "TRY",
-                },
-            ],
-            "derived_metrics": {},
-        },
-    )
-    assert answer == "BIST 100 TL karsiligi su an yaklasik 12.000,50 TL seviyesinde."
-
-
-def test_market_snapshot_direct_answer_converts_try_index_to_usd() -> None:
-    memory = InMemoryConversationMemory()
-    memory.remember_exchange("chat-1", "bist100 kaç tl", "BIST 100...")
-    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
-    answer = agent._market_snapshot_direct_answer(
-        "dolar karşılığı ne",
-        {
-            "status": "ok",
-            "quotes": [
-                {
-                    "symbol": "XU100.IS",
-                    "name": "BIST 100",
-                    "price": 12000.0,
-                    "currency": "TRY",
-                },
-                {
-                    "symbol": "USDTRY=X",
-                    "name": "USD/TRY",
-                    "price": 40.0,
-                    "currency": "TRY",
-                },
-            ],
-            "derived_metrics": {},
-        },
-        chat_id="chat-1",
-    )
-    assert answer == "BIST 100 dolar karsiligi su an yaklasik 300,00 USD seviyesinde."
+    assert answer == "Model gram altini dogal bir dille anlatti."
+    content_text = _joined_gemini_content_text(fake_gemini.models.calls[0]["contents"])
+    assert "Guncel market verisi" in content_text
+    assert "gold_gram_try_estimate" in content_text
+    assert "4115.3" in content_text
+    assert "dogal bir sohbet cevabi" in content_text
 
 
 def test_extract_text_returns_fallback_only_for_public_helper() -> None:
@@ -697,8 +570,9 @@ def test_large_market_move_appends_news() -> None:
         }
     )
     agent = EconomyAgent(Settings(google_api_key="test"), market, _DummyTool(), memory, news_search=news)
+    agent._client = _FakeGeminiClient("Nasdaq icin modelin dogal piyasa cevabi.")
     answer = agent.reply("nasdaq ne kadar", chat_id="chat-1")
-    assert "Nasdaq Composite su an yaklasik 24.500,00 USD seviyesinde." in answer
+    assert "Nasdaq icin modelin dogal piyasa cevabi." in answer
     assert "Hareket belirgin oldugu icin son haberlerden bazilari:" in answer
     assert news.queries == ["Nasdaq"]
 

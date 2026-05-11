@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import time
 from datetime import datetime
@@ -82,7 +83,7 @@ class EconomyAgent:
     def _reply_with_gemini(self, user_message: str, chat_id: str | None, user_name: str | None) -> str:
         prefetched_market = self._prefetch_market_snapshot(user_message, chat_id)
         if prefetched_market is not None:
-            answer = self._market_snapshot_direct_answer(user_message, prefetched_market, chat_id)
+            answer = self._reply_with_prefetched_market(user_message, chat_id, user_name, prefetched_market)
             news_snapshot = self._news_for_large_market_move(user_message, prefetched_market, chat_id)
             if news_snapshot:
                 answer = f"{answer}\n\n{self._format_news_snapshot(news_snapshot, heading='Hareket belirgin oldugu icin son haberlerden bazilari:')}"
@@ -125,6 +126,33 @@ class EconomyAgent:
         answer = self._extract_text(final_response)
         self.memory.remember_exchange(chat_id, user_message, answer)
         return answer
+
+    def _reply_with_prefetched_market(
+        self,
+        user_message: str,
+        chat_id: str | None,
+        user_name: str | None,
+        market_snapshot: dict[str, Any],
+    ) -> str:
+        from google import genai
+        from google.genai import types
+
+        if self._client is None:
+            self._client = genai.Client(api_key=self.settings.google_api_key)
+
+        contents = self._build_contents(
+            types,
+            user_message,
+            chat_id,
+            user_name,
+            market_snapshot=market_snapshot,
+        )
+        response = self._generate_content_with_retry(
+            model=self.settings.gemini_model,
+            contents=contents,
+            config=self._build_config(types, include_tools=False),
+        )
+        return self._extract_text(response)
 
     def _generate_content_with_retry(self, model: str, contents: list[Any], config: Any) -> Any:
         attempts = max(1, self.settings.gemini_retry_attempts)
@@ -199,6 +227,7 @@ class EconomyAgent:
         user_message: str,
         chat_id: str | None,
         user_name: str | None,
+        market_snapshot: dict[str, Any] | None = None,
     ) -> list[Any]:
         contents = []
         for message in self.memory.snapshot(chat_id):
@@ -212,12 +241,27 @@ class EconomyAgent:
         contents.append(
             types.Content(
                 role="user",
-                parts=[types.Part(text=self._current_turn_text(user_message, chat_id, user_name))],
+                parts=[
+                    types.Part(
+                        text=self._current_turn_text(
+                            user_message,
+                            chat_id,
+                            user_name,
+                            market_snapshot=market_snapshot,
+                        )
+                    )
+                ],
             )
         )
         return contents
 
-    def _current_turn_text(self, user_message: str, chat_id: str | None, user_name: str | None) -> str:
+    def _current_turn_text(
+        self,
+        user_message: str,
+        chat_id: str | None,
+        user_name: str | None,
+        market_snapshot: dict[str, Any] | None = None,
+    ) -> str:
         try:
             now = datetime.now(ZoneInfo(self.settings.timezone))
         except ZoneInfoNotFoundError:
@@ -232,8 +276,41 @@ class EconomyAgent:
         if active_asset:
             lines.append(f"Aktif varlik baglami: {active_asset}")
         lines.append(f"Birincil cevap tercihi: {self._response_preference_hint(user_message)}")
+        if market_snapshot is not None:
+            lines.append(
+                "Guncel market verisi asagida verildi. Fiyat cevabinda yalnizca bu "
+                "veriyi kullan; fiyat uydurma, tarih sorma, kodun hazir cumlesi gibi "
+                "degil dogal bir sohbet cevabi yaz."
+            )
+            lines.append(json.dumps(self._compact_market_snapshot(market_snapshot), ensure_ascii=False))
         lines.append(f"Kullanici mesaji: {user_message}")
         return "\n".join(lines)
+
+    def _compact_market_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        quotes = []
+        for quote in (snapshot.get("quotes") or [])[:8]:
+            quotes.append(
+                {
+                    "symbol": quote.get("symbol"),
+                    "requested_symbol": quote.get("requested_symbol"),
+                    "name": quote.get("name"),
+                    "price": quote.get("price"),
+                    "previous_close": quote.get("previous_close"),
+                    "change": quote.get("change"),
+                    "change_percent": quote.get("change_percent"),
+                    "currency": quote.get("currency"),
+                    "market_time": quote.get("market_time"),
+                    "timezone": quote.get("timezone"),
+                }
+            )
+        return {
+            "provider": snapshot.get("provider"),
+            "fetched_at": snapshot.get("fetched_at"),
+            "note": snapshot.get("note"),
+            "quotes": quotes,
+            "derived_metrics": snapshot.get("derived_metrics") or {},
+            "errors": snapshot.get("errors") or [],
+        }
 
     def _remember_user_name(self, chat_id: str | None, user_message: str) -> str | None:
         detected_name = self._extract_explicit_name(user_message)
@@ -806,105 +883,6 @@ class EconomyAgent:
         chunks = [part.text for part in parts if getattr(part, "text", None)]
         return "\n".join(chunks).strip() or None
 
-    def _market_snapshot_direct_answer(
-        self,
-        user_message: str,
-        snapshot: dict[str, Any],
-        chat_id: str | None = None,
-    ) -> str:
-        lowered = user_message.lower()
-        derived = snapshot.get("derived_metrics") or {}
-        quotes = snapshot.get("quotes") or []
-        active_unit = self._infer_active_unit(chat_id, user_message)
-        wants_try = self._mentions_any(lowered, ["tl", "try", "lira"])
-        wants_usd = self._mentions_any(lowered, ["usd", "dolar", "dollar"])
-        gold_quote = self._find_quote(snapshot, "GC=F")
-        gold_request = bool(gold_quote) and (
-            self._mentions_any(lowered, ["altın", "altin", "gold", "xau"])
-            or self._mentions_any(lowered, ["gram", "ons", "ounce", "kilo", "kilosu", "kg"])
-            or active_unit in {"ons", "gram", "kilo"}
-        )
-
-        if gold_request:
-            if self._is_broad_market_status_question(lowered):
-                gram_try = _first_numeric_value(derived.get("gold_gram_try_estimate"))
-                ounce_usd = _first_numeric_value(derived.get("gold_ounce_usd"))
-                if ounce_usd is None:
-                    ounce_usd = _first_numeric_value(gold_quote.get("price"))
-                if gram_try is not None and ounce_usd is not None:
-                    return (
-                        "Son erisilebilir veriye gore altinda gram fiyat yaklasik "
-                        f"{self._format_number(gram_try)} TL, ons fiyat ise yaklasik "
-                        f"{self._format_number(ounce_usd)} USD seviyesinde."
-                    )
-                if gram_try is not None:
-                    return f"Son erisilebilir veriye gore altinda gram fiyat yaklasik {self._format_number(gram_try)} TL seviyesinde."
-                if ounce_usd is not None:
-                    return f"Son erisilebilir veriye gore altinda ons fiyat yaklasik {self._format_number(ounce_usd)} USD seviyesinde."
-            if active_unit == "ons" and wants_try:
-                value = _first_numeric_value(derived.get("gold_ounce_try_estimate"))
-                if value is not None:
-                    return f"Altinin ons fiyati su an yaklasik {self._format_number(value)} TL seviyesinde."
-            if active_unit == "ons" and not wants_try:
-                value = _first_numeric_value(derived.get("gold_ounce_usd"))
-                if value is None:
-                    value = _first_numeric_value(gold_quote.get("price"))
-                if value is not None:
-                    return f"Altinin ons fiyati su an yaklasik {self._format_number(value)} USD seviyesinde."
-            if active_unit == "gram" or self._mentions_any(lowered, ["gram"]) or (wants_try and not wants_usd):
-                value = _first_numeric_value(derived.get("gold_gram_try_estimate"))
-                if value is not None:
-                    return f"Gram altin su an yaklasik {self._format_number(value)} TL seviyesinde."
-            if self._mentions_any(lowered, ["ons", "ounce", "usd", "dolar"]):
-                value = _first_numeric_value(derived.get("gold_ounce_usd"))
-                if value is None:
-                    value = _first_numeric_value(gold_quote.get("price"))
-                if value is not None:
-                    return f"Altinin ons fiyati su an yaklasik {self._format_number(value)} USD seviyesinde."
-            value = _first_numeric_value(derived.get("gold_gram_try_estimate"))
-            if value is not None:
-                return f"Gram altin su an yaklasik {self._format_number(value)} TL seviyesinde."
-
-        if self._mentions_any(lowered, ["euro", "eurtry", "eur/tl", "euro/tl"]):
-            quote = self._find_quote(snapshot, "EURTRY=X")
-            value = _first_numeric_value((quote or {}).get("price"))
-            if value is not None:
-                return f"Euro/TL su an yaklasik {self._format_number(value)} seviyesinde."
-
-        main_quote = self._first_non_currency_quote(snapshot)
-        if main_quote:
-            try_value = self._convert_quote_to_try(main_quote, snapshot)
-            usd_value = self._convert_quote_to_usd(main_quote, snapshot)
-            if wants_try and try_value is not None:
-                name = main_quote.get("name") or main_quote.get("symbol") or "Bu varlik"
-                return f"{name} TL karsiligi su an yaklasik {self._format_number(try_value)} TL seviyesinde."
-            if wants_usd and usd_value is not None:
-                name = main_quote.get("name") or main_quote.get("symbol") or "Bu varlik"
-                return f"{name} dolar karsiligi su an yaklasik {self._format_number(usd_value)} USD seviyesinde."
-            value = _first_numeric_value(main_quote.get("price"))
-            if value is not None:
-                currency = main_quote.get("currency") or ""
-                suffix = f" {currency}" if currency else ""
-                name = main_quote.get("name") or main_quote.get("symbol") or "Bu varlik"
-                return f"{name} su an yaklasik {self._format_number(value)}{suffix} seviyesinde."
-
-        if self._mentions_any(lowered, ["dolar", "usdtry", "usd/try", "dolar/tl"]):
-            quote = self._find_quote(snapshot, "USDTRY=X")
-            value = _first_numeric_value((quote or {}).get("price"))
-            if value is not None:
-                return f"Dolar/TL su an yaklasik {self._format_number(value)} seviyesinde."
-
-        usable_quotes = [quote for quote in quotes if _first_numeric_value(quote.get("price")) is not None]
-        if usable_quotes:
-            quote = usable_quotes[0]
-            value = _first_numeric_value(quote.get("price"))
-            currency = quote.get("currency") or ""
-            name = quote.get("name") or quote.get("symbol") or "Bu varlik"
-            suffix = f" {currency}" if currency else ""
-            return f"{name} su an yaklasik {self._format_number(value)}{suffix} seviyesinde."
-
-        return "Su an piyasa verisine ulasamadim. Biraz sonra tekrar deneyebilir misiniz?"
-
     def _first_non_currency_quote(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
         for quote in snapshot.get("quotes") or []:
             symbol = quote.get("symbol")
@@ -912,58 +890,11 @@ class EconomyAgent:
                 return quote
         return None
 
-    def _convert_quote_to_try(self, quote: dict[str, Any], snapshot: dict[str, Any]) -> float | None:
-        value = _first_numeric_value(quote.get("price"))
-        if value is None:
-            return None
-
-        currency = (quote.get("currency") or "").upper()
-        symbol = quote.get("symbol")
-        if currency == "TRY" or str(symbol).endswith(".IS"):
-            return value
-        if currency != "USD":
-            return None
-
-        usdtry_quote = self._find_quote(snapshot, "USDTRY=X")
-        usdtry = _first_numeric_value((usdtry_quote or {}).get("price"))
-        if usdtry is None:
-            return None
-        return value * usdtry
-
-    def _convert_quote_to_usd(self, quote: dict[str, Any], snapshot: dict[str, Any]) -> float | None:
-        value = _first_numeric_value(quote.get("price"))
-        if value is None:
-            return None
-
-        currency = (quote.get("currency") or "").upper()
-        if currency == "USD":
-            return value
-        if currency != "TRY":
-            return None
-
-        usdtry_quote = self._find_quote(snapshot, "USDTRY=X")
-        usdtry = _first_numeric_value((usdtry_quote or {}).get("price"))
-        if usdtry in (None, 0):
-            return None
-        return value / usdtry
-
     def _find_quote(self, snapshot: dict[str, Any], symbol: str) -> dict[str, Any] | None:
         for quote in snapshot.get("quotes") or []:
             if quote.get("symbol") == symbol:
                 return quote
         return None
-
-    def _format_number(self, value: float | int | None) -> str:
-        if value is None:
-            return ""
-        numeric = float(value)
-        if abs(numeric) >= 1000:
-            text = f"{numeric:,.2f}"
-        elif abs(numeric) >= 100:
-            text = f"{numeric:.2f}"
-        else:
-            text = f"{numeric:.4f}".rstrip("0").rstrip(".")
-        return text.replace(",", "X").replace(".", ",").replace("X", ".")
 
     def _execute_tool(self, function_call: Any) -> dict[str, Any]:
         name = getattr(function_call, "name", "")
