@@ -65,9 +65,11 @@ class _FakeGeminiClient:
 class _FakeAgent:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.chat_ids: list[str | None] = []
 
     def reply(self, user_message: str, chat_id: str | None = None) -> str:
         self.messages.append(user_message)
+        self.chat_ids.append(chat_id)
         return f"cevap: {user_message}"
 
 
@@ -144,6 +146,17 @@ class _RecordingTelegramClient(TelegramClient):
         return {"ok": True}
 
 
+class _FakeTypes:
+    class Part:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class Content:
+        def __init__(self, role: str, parts: list) -> None:
+            self.role = role
+            self.parts = parts
+
+
 def _joined_gemini_content_text(contents: list) -> str:
     chunks = []
     for content in contents:
@@ -197,6 +210,7 @@ def test_webhook_text_message_returns_text_reply() -> None:
             "message": {
                 "message_id": 7,
                 "chat": {"id": 123},
+                "from": {"id": 456, "first_name": "Firat"},
                 "text": "dolar kac tl",
             }
         },
@@ -205,6 +219,7 @@ def test_webhook_text_message_returns_text_reply() -> None:
     )
     assert handled is True
     assert agent.messages == ["dolar kac tl"]
+    assert agent.chat_ids == ["123:456"]
     assert telegram.messages[0]["text"] == "cevap: dolar kac tl"
     assert telegram.voices == []
 
@@ -217,6 +232,7 @@ def test_webhook_voice_message_returns_voice_reply() -> None:
             "message": {
                 "message_id": 8,
                 "chat": {"id": 123},
+                "from": {"id": 456, "first_name": "Firat"},
                 "voice": {"file_id": "voice-file-id", "mime_type": "audio/ogg"},
             }
         },
@@ -228,6 +244,7 @@ def test_webhook_voice_message_returns_voice_reply() -> None:
     assert handled is True
     assert telegram.downloaded_file_ids == ["voice-file-id"]
     assert agent.messages == ["altin kac tl"]
+    assert agent.chat_ids == ["123:456"]
     assert telegram.voices[0]["audio"] == b"mp3-bytes"
     assert telegram.voices[0]["reply_to_message_id"] == 8
     assert telegram.messages == []
@@ -308,6 +325,26 @@ def test_memory_stores_name_only_when_explicitly_provided() -> None:
     assert memory.get_preferred_name("1") is None
     agent._remember_user_name("1", "benim adim firat")
     assert memory.get_preferred_name("1") == "Firat"
+
+
+def test_context_followup_mentions_previous_user_message_to_gemini() -> None:
+    memory = InMemoryConversationMemory()
+    memory.remember_exchange(
+        "chat-1",
+        "IREN Limited şirketinin 2,6 milyar dolarlık tahvil ihracı açıklaması ne oluyor",
+        "IREN tahvil ihracıyla fon sağlıyor.",
+    )
+    agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)
+    contents = agent._build_contents(
+        _FakeTypes,
+        "iyi bir şey mi kötü bir şey mi",
+        "chat-1",
+        None,
+    )
+    content_text = _joined_gemini_content_text(contents)
+    assert "Bu mesaj onceki konunun devami gibi gorunuyor" in content_text
+    assert "IREN Limited şirketinin 2,6 milyar dolarlık tahvil ihracı" in content_text
+    assert "iyi-kotu" in content_text
 
 
 def test_gold_snapshot_builds_try_and_gram_estimates() -> None:

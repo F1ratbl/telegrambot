@@ -272,6 +272,12 @@ class EconomyAgent:
             lines.append("Kullanici ad tercihi: bilinmiyor")
         if active_asset:
             lines.append(f"Aktif varlik baglami: {active_asset}")
+        previous_user_message = self._previous_user_message(chat_id)
+        if previous_user_message and self._is_context_followup_message(user_message.lower()):
+            lines.append(
+                "Bu mesaj onceki konunun devami gibi gorunuyor. Onceki kullanici "
+                f"mesaji: {previous_user_message}"
+            )
         lines.append(f"Birincil cevap tercihi: {self._response_preference_hint(user_message)}")
         if market_snapshot is not None:
             lines.append(
@@ -337,8 +343,8 @@ class EconomyAgent:
 
     def _response_preference_hint(self, user_message: str) -> str:
         lowered = user_message.lower()
-        if self._is_short_followup_message(lowered):
-            return "Bu mesaj onceki sorunun kisa bir devami olabilir. Onceki varlik baglamini koru ve kullanicinin istedigi birim veya olcuye gore cevap ver."
+        if self._is_context_followup_message(lowered):
+            return "Bu mesaj onceki sorunun devami olabilir. Onceki konuyu koru; kullanici degerlendirme istiyorsa ayni haber/varlik uzerinden iyi-kotu, olumlu-olumsuz ve riskleri anlat."
         if any(token in lowered for token in ["ons", "ounce"]):
             return "Kullanici ons odakli soruyor. Ozellikle baska bir para birimi istemedikce ons fiyatini USD cinsinden ver."
         if any(token in lowered for token in ["gram", "kilo", "kilosu", "kg", "kilogram"]):
@@ -808,6 +814,27 @@ class EconomyAgent:
         if self._is_short_followup_message(canonical):
             return True
         followup_markers = [
+            "iyi mi",
+            "kötü mü",
+            "kotu mu",
+            "iyi bir şey mi",
+            "iyi bir sey mi",
+            "kötü bir şey mi",
+            "kotu bir sey mi",
+            "olumlu mu",
+            "olumsuz mu",
+            "pozitif mi",
+            "negatif mi",
+            "riskli mi",
+            "ne anlama geliyor",
+            "ne anlama gelir",
+            "bu ne demek",
+            "bu ne demek oluyor",
+            "bunun etkisi ne",
+            "etkisi ne olur",
+            "hisseye etkisi ne",
+            "yatırımcı için ne demek",
+            "yatirimci icin ne demek",
             "kaç tl ediyor",
             "kac tl ediyor",
             "tl ediyor",
@@ -834,6 +861,12 @@ class EconomyAgent:
             "son haberler",
         ]
         return any(marker in canonical for marker in followup_markers)
+
+    def _previous_user_message(self, chat_id: str | None) -> str | None:
+        for message in reversed(self.memory.snapshot(chat_id)):
+            if message.role == "user" and message.text:
+                return message.text
+        return None
 
     def _extract_asset_label(self, text: str) -> str | None:
         lowered = text.lower()

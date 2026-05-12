@@ -88,7 +88,7 @@ def _handle_update(
 
     reply = agent.reply(
         user_message=text,
-        chat_id=str(chat_id),
+        chat_id=_memory_chat_id(message, chat_id),
     )
     telegram.send_message(
         chat_id=chat_id,
@@ -153,7 +153,7 @@ def _handle_voice_message(
         return True
 
     try:
-        reply = agent.reply(user_message=transcript, chat_id=str(chat_id))
+        reply = agent.reply(user_message=transcript, chat_id=_memory_chat_id(message, chat_id))
     except Exception:
         logger.exception("Agent failed after voice transcription.")
         telegram.send_message(
@@ -211,3 +211,11 @@ def _handle_voice_message(
         return True
 
     return True
+
+
+def _memory_chat_id(message: dict[str, Any], chat_id: int | str) -> str:
+    sender = message.get("from") or {}
+    user_id = sender.get("id") if isinstance(sender, dict) else None
+    if user_id is None:
+        return str(chat_id)
+    return f"{chat_id}:{user_id}"
