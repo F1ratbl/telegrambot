@@ -512,22 +512,22 @@ def test_news_query_cleans_economic_topic_request() -> None:
     assert query == "ABD enflasyon"
 
 
-def test_macro_status_question_is_treated_as_news_without_news_word() -> None:
+def test_macro_status_question_does_not_fetch_news_without_explicit_request() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
     agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
     answer = agent.reply("ABD enflasyon son durum ne", chat_id="chat-1")
-    assert "ABD enflasyon icin son haberler:" in answer
-    assert news.queries == ["ABD enflasyon"]
+    assert "Gemini API anahtari" in answer
+    assert news.queries == []
 
 
-def test_generic_market_status_question_uses_general_news_query() -> None:
+def test_generic_market_status_question_does_not_fetch_news_without_explicit_request() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
     agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
     answer = agent.reply("piyasalarda son durum ne", chat_id="chat-1")
-    assert "ekonomi piyasalar icin son haberler:" in answer
-    assert news.queries == ["ekonomi piyasalar"]
+    assert "Gemini API anahtari" in answer
+    assert news.queries == []
 
 
 def test_asset_status_question_stays_out_of_news_without_news_word() -> None:
@@ -536,16 +536,28 @@ def test_asset_status_question_stays_out_of_news_without_news_word() -> None:
     assert agent._is_news_question("altın son durum ne") is False
 
 
-def test_amd_news_question_uses_amd_query() -> None:
+def test_specific_news_explanation_does_not_return_news_list() -> None:
+    memory = InMemoryConversationMemory()
+    news = _FakeNews()
+    agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
+    answer = agent.reply(
+        "IREN Limited şirketinin 2,6 Milyar Dolarlık Tahvil İhracı haberi ne oluyor açıklar mısın",
+        chat_id="chat-1",
+    )
+    assert "Gemini API anahtari" in answer
+    assert news.queries == []
+
+
+def test_amd_why_moved_question_does_not_fetch_news_without_explicit_request() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
     agent = EconomyAgent(Settings(), _DummyTool(), _DummyTool(), memory, news_search=news)
     answer = agent.reply("amd neden bu kadar yukseldi", chat_id="chat-1")
-    assert "AMD icin son haberler:" in answer
-    assert news.queries == ["AMD"]
+    assert "Gemini API anahtari" in answer
+    assert news.queries == []
 
 
-def test_large_market_move_appends_news() -> None:
+def test_large_market_move_does_not_append_news_without_explicit_request() -> None:
     memory = InMemoryConversationMemory()
     news = _FakeNews()
     market = _FakeMarket(
@@ -573,8 +585,8 @@ def test_large_market_move_appends_news() -> None:
     agent._client = _FakeGeminiClient("Nasdaq icin modelin dogal piyasa cevabi.")
     answer = agent.reply("nasdaq ne kadar", chat_id="chat-1")
     assert "Nasdaq icin modelin dogal piyasa cevabi." in answer
-    assert "Hareket belirgin oldugu icin son haberlerden bazilari:" in answer
-    assert news.queries == ["Nasdaq"]
+    assert "Hareket belirgin oldugu icin son haberlerden bazilari:" not in answer
+    assert news.queries == []
 
 
 def test_news_summary_prefers_article_text_over_repeated_title() -> None:

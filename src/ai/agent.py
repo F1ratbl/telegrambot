@@ -84,9 +84,6 @@ class EconomyAgent:
         prefetched_market = self._prefetch_market_snapshot(user_message, chat_id)
         if prefetched_market is not None:
             answer = self._reply_with_prefetched_market(user_message, chat_id, user_name, prefetched_market)
-            news_snapshot = self._news_for_large_market_move(user_message, prefetched_market, chat_id)
-            if news_snapshot:
-                answer = f"{answer}\n\n{self._format_news_snapshot(news_snapshot, heading='Hareket belirgin oldugu icin son haberlerden bazilari:')}"
             self.memory.remember_exchange(chat_id, user_message, answer)
             return answer
 
@@ -358,24 +355,44 @@ class EconomyAgent:
 
     def _is_news_question(self, user_message: str) -> bool:
         lowered = self._normalize_news_text(user_message).lower()
-        if "neden" in lowered and any(marker in lowered for marker in ["yükseldi", "yukseldi", "düştü", "dustu"]):
-            return True
-        news_markers = [
-            "haber",
-            "haberler",
+        explanation_markers = [
+            "haberi açıkla",
+            "haberi acikla",
+            "haberini açıkla",
+            "haberini acikla",
+            "haberi anlat",
+            "haberini anlat",
+            "haberi yorumla",
+            "haberini yorumla",
+            "haberi ne oluyor",
+            "haber ne oluyor",
+            "ne anlama geliyor",
+            "ne anlama gelir",
+        ]
+        if any(marker in lowered for marker in explanation_markers):
+            return False
+
+        explicit_news_markers = [
+            "son haberler",
+            "haberleri neler",
+            "haberler neler",
+            "haberleri ver",
+            "haberleri getir",
+            "haberleri çek",
+            "haberleri cek",
+            "haber çek",
+            "haber cek",
+            "haberlere bak",
+            "haberlerine bak",
+            "haberleri kontrol",
+            "güncel haberler",
+            "guncel haberler",
             "son gelişmeler",
             "son gelismeler",
-            "gündem",
-            "gundem",
-            "ne oldu",
-            "neden yükseldi",
-            "neden yukseldi",
-            "neden düştü",
-            "neden dustu",
         ]
-        if any(marker in lowered for marker in news_markers):
+        if any(marker in lowered for marker in explicit_news_markers):
             return True
-        return self._is_macro_news_status_question(lowered)
+        return False
 
     def _answer_news_question(self, user_message: str, chat_id: str | None) -> str:
         query = self._news_query_for_message(user_message, chat_id)
