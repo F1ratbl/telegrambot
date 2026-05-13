@@ -69,6 +69,6 @@ python scripts/set_telegram_webhook.py https://YOUR_VERCEL_DOMAIN/telegram/webho
 
 ## Notlar
 
-- Piyasa verisi varsayilan olarak Yahoo Finance chart endpointinden gelir; borsa/veri saglayici durumuna gore gecikmeli olabilir.
+- Grafikler icin `TWELVE_DATA_API_KEY`, `FINNHUB_API_KEY` veya `ALPHA_VANTAGE_API_KEY` eklenirse bot once OHLC mum verisi cekip cache'ler; anahtar yoksa/eslesme olmazsa Yahoo/Stooq fiyat cizgisi yedekleri kullanilir.
 - Serverless ortamda dahili sohbet bellegi warm instance icinde calisir. Uzun sureli ve garantili sohbet hafizasi gerekiyorsa ayni `memory` arayuzu Redis/Upstash gibi kalici bir depo ile degistirilebilir.
 - Bot yatirim tavsiyesi vermek yerine egitim, analiz, senaryo ve risk odakli cevap vermeye yonlendirilir.

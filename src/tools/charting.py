@@ -33,6 +33,16 @@ class ChartRequest:
     interval_hours: int | None = None
 
 
+@dataclass(frozen=True)
+class OHLCPoint:
+    time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float | None = None
+
+
 class PriceChartTool:
     yahoo_chart_urls = (
         "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
@@ -44,6 +54,9 @@ class PriceChartTool:
     )
     nasdaq_historical_url = "https://api.nasdaq.com/api/quote/{symbol}/historical"
     stooq_daily_url = "https://stooq.com/q/d/l/"
+    twelve_data_time_series_url = "https://api.twelvedata.com/time_series"
+    finnhub_stock_candle_url = "https://finnhub.io/api/v1/stock/candle"
+    alpha_vantage_query_url = "https://www.alphavantage.co/query"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -54,6 +67,7 @@ class PriceChartTool:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._ohlc_cache: dict[str, tuple[float, list[OHLCPoint]]] = {}
 
     def parse_request(self, text: str) -> ChartRequest | None:
         lowered = text.lower()
@@ -96,6 +110,24 @@ class PriceChartTool:
         period_label = _period_label(request.period, request.custom_days, request.interval_hours)
         caption = f"{DISPLAY_NAMES.get(normalize_symbol(request.symbol), request.symbol.upper())} {period_label} fiyat grafigi"
         try:
+            candles = self._fetch_ohlc_history(
+                request.symbol,
+                request.period,
+                custom_days=request.custom_days,
+                interval_hours=request.interval_hours,
+            )
+            if len(candles) >= 2:
+                return self._render_candlestick_chart(
+                    request.symbol,
+                    request.period,
+                    candles,
+                    request.custom_days,
+                    request.interval_hours,
+                ), caption
+        except Exception as exc:
+            logger.info("OHLC chart data unavailable for %s, falling back to close line chart: %s", request.symbol, exc)
+
+        try:
             points = self._fetch_history(
                 request.symbol,
                 request.period,
@@ -109,6 +141,141 @@ class PriceChartTool:
             return self._render_unavailable_chart(request.symbol, request.period, request.custom_days, request.interval_hours), f"{caption} - veri gecici olarak alinamadi"
         image = self._render_chart(request.symbol, request.period, points, request.custom_days, request.interval_hours)
         return image, caption
+
+    def _fetch_ohlc_history(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> list[OHLCPoint]:
+        cache_key = _ohlc_cache_key(requested_symbol, period, custom_days, interval_hours)
+        cached = self._ohlc_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] <= max(0, self.settings.chart_cache_ttl_seconds):
+            return list(cached[1])
+
+        errors: list[str] = []
+        providers = [
+            ("Twelve Data", self.settings.twelve_data_api_key, self._fetch_twelve_data_ohlc),
+            ("Finnhub", self.settings.finnhub_api_key, self._fetch_finnhub_ohlc),
+            ("Alpha Vantage", self.settings.alpha_vantage_api_key, self._fetch_alpha_vantage_ohlc),
+        ]
+        for provider_name, api_key, fetcher in providers:
+            if not api_key:
+                continue
+            try:
+                candles = fetcher(requested_symbol, period, custom_days, interval_hours)
+                candles = _post_process_ohlc(candles, period, custom_days, interval_hours)
+                if candles:
+                    self._ohlc_cache[cache_key] = (time.monotonic(), candles)
+                    return list(candles)
+                errors.append(f"{provider_name}: empty")
+            except Exception as exc:
+                errors.append(f"{provider_name}: {exc}")
+                logger.info("%s OHLC history failed for %s: %s", provider_name, requested_symbol, exc)
+        raise RuntimeError("; ".join(errors) or "No OHLC provider API key configured.")
+
+    def _fetch_twelve_data_ohlc(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> list[OHLCPoint]:
+        import requests
+
+        symbol = _twelve_data_symbol(requested_symbol)
+        if symbol is None:
+            raise RuntimeError("Twelve Data fallback does not support this symbol.")
+        response = requests.get(
+            self.twelve_data_time_series_url,
+            params={
+                "symbol": symbol,
+                "interval": _twelve_data_interval(period, custom_days, interval_hours),
+                "outputsize": _ohlc_output_size(period, custom_days, interval_hours),
+                "order": "ASC",
+                "apikey": self.settings.twelve_data_api_key,
+            },
+            headers=self.headers,
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("status") == "error":
+            raise RuntimeError(str(data.get("message") or "Twelve Data returned an error."))
+        return _parse_twelve_data_ohlc(data)
+
+    def _fetch_finnhub_ohlc(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> list[OHLCPoint]:
+        import requests
+
+        symbol = _finnhub_symbol(requested_symbol)
+        if symbol is None:
+            raise RuntimeError("Finnhub fallback does not support this symbol.")
+        start, end = _unix_date_range(period, custom_days)
+        response = requests.get(
+            self.finnhub_stock_candle_url,
+            params={
+                "symbol": symbol,
+                "resolution": _finnhub_resolution(custom_days, interval_hours),
+                "from": start,
+                "to": end,
+                "token": self.settings.finnhub_api_key,
+            },
+            headers=self.headers,
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("s") != "ok":
+            raise RuntimeError(str(data.get("s") or "Finnhub returned no candles."))
+        return _parse_finnhub_ohlc(data)
+
+    def _fetch_alpha_vantage_ohlc(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> list[OHLCPoint]:
+        import requests
+
+        symbol = _alpha_vantage_symbol(requested_symbol)
+        if symbol is None:
+            raise RuntimeError("Alpha Vantage fallback does not support this symbol.")
+
+        params: dict[str, Any]
+        if interval_hours:
+            params = {
+                "function": "TIME_SERIES_INTRADAY",
+                "symbol": symbol,
+                "interval": "60min",
+                "outputsize": "full",
+                "apikey": self.settings.alpha_vantage_api_key,
+            }
+        else:
+            params = {
+                "function": "TIME_SERIES_DAILY",
+                "symbol": symbol,
+                "outputsize": "full",
+                "apikey": self.settings.alpha_vantage_api_key,
+            }
+        response = requests.get(
+            self.alpha_vantage_query_url,
+            params=params,
+            headers=self.headers,
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if "Error Message" in data or "Note" in data or "Information" in data:
+            raise RuntimeError(str(data.get("Error Message") or data.get("Note") or data.get("Information")))
+        return _parse_alpha_vantage_ohlc(data)
 
     def _extract_symbol(self, text: str) -> str | None:
         lowered = text.lower()
@@ -438,6 +605,78 @@ class PriceChartTool:
         plt.close(fig)
         return output.getvalue()
 
+    def _render_candlestick_chart(
+        self,
+        requested_symbol: str,
+        period: str,
+        candles: list[OHLCPoint],
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> bytes:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+
+        symbol = normalize_symbol(requested_symbol)
+        name = DISPLAY_NAMES.get(symbol, requested_symbol.upper())
+        closes = [candle.close for candle in candles]
+
+        fig, (ax, volume_ax) = plt.subplots(
+            2,
+            1,
+            figsize=(9, 5.4),
+            dpi=160,
+            sharex=True,
+            gridspec_kw={"height_ratios": [4, 1], "hspace": 0.05},
+        )
+        fig.patch.set_facecolor("#f7f8fa")
+        ax.set_facecolor("#ffffff")
+        volume_ax.set_facecolor("#ffffff")
+
+        x_values = mdates.date2num([candle.time for candle in candles])
+        candle_width = _candle_width(x_values)
+        for candle, x_value in zip(candles, x_values, strict=False):
+            rising = candle.close >= candle.open
+            color = "#16a34a" if rising else "#dc2626"
+            lower = min(candle.open, candle.close)
+            height = max(abs(candle.close - candle.open), max(closes) * 0.0008)
+            ax.vlines(x_value, candle.low, candle.high, color=color, linewidth=1.1, alpha=0.95)
+            ax.add_patch(
+                Rectangle(
+                    (x_value - candle_width / 2, lower),
+                    candle_width,
+                    height,
+                    facecolor=color,
+                    edgecolor=color,
+                    alpha=0.85,
+                )
+            )
+            if candle.volume is not None:
+                volume_ax.bar(x_value, candle.volume, width=candle_width, color=color, alpha=0.25)
+
+        ax.set_title(f"{name} - {_period_label(period, custom_days, interval_hours)}", fontsize=14, fontweight="bold")
+        ax.set_ylabel("Fiyat")
+        ax.grid(True, color="#e5e7eb", linewidth=0.8)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        volume_ax.set_ylabel("Hacim", fontsize=9)
+        volume_ax.grid(True, color="#eef2f7", linewidth=0.7)
+        volume_ax.spines["top"].set_visible(False)
+        volume_ax.spines["right"].set_visible(False)
+        volume_ax.tick_params(axis="y", labelsize=8)
+        date_format = "%d.%m %H:%M" if interval_hours else "%d.%m"
+        volume_ax.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
+        fig.autofmt_xdate()
+        fig.tight_layout()
+
+        output = BytesIO()
+        fig.savefig(output, format="png", bbox_inches="tight")
+        plt.close(fig)
+        return output.getvalue()
+
     def _render_unavailable_chart(
         self,
         requested_symbol: str,
@@ -536,6 +775,20 @@ def _post_process_points(
     return points
 
 
+def _post_process_ohlc(
+    candles: list[OHLCPoint],
+    period: str,
+    custom_days: int | None,
+    interval_hours: int | None,
+) -> list[OHLCPoint]:
+    cutoff = _cutoff_datetime(period, custom_days)
+    filtered = [candle for candle in candles if candle.time >= cutoff]
+    filtered = sorted(filtered, key=lambda candle: candle.time)
+    if interval_hours and interval_hours > 1:
+        filtered = _resample_ohlc_by_hours(filtered, interval_hours)
+    return filtered
+
+
 def _resample_points_by_hours(points: list[tuple[datetime, float]], interval_hours: int) -> list[tuple[datetime, float]]:
     if not points:
         return []
@@ -549,6 +802,36 @@ def _resample_points_by_hours(points: list[tuple[datetime, float]], interval_hou
         )
         buckets[bucket_time] = (bucket_time, price)
     return [buckets[key] for key in sorted(buckets)]
+
+
+def _resample_ohlc_by_hours(candles: list[OHLCPoint], interval_hours: int) -> list[OHLCPoint]:
+    if not candles:
+        return []
+    buckets: dict[datetime, list[OHLCPoint]] = {}
+    for candle in sorted(candles, key=lambda item: item.time):
+        bucket_time = candle.time.replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+            hour=(candle.time.hour // interval_hours) * interval_hours,
+        )
+        buckets.setdefault(bucket_time, []).append(candle)
+
+    resampled = []
+    for bucket_time in sorted(buckets):
+        bucket = buckets[bucket_time]
+        volume_values = [candle.volume for candle in bucket if candle.volume is not None]
+        resampled.append(
+            OHLCPoint(
+                time=bucket_time,
+                open=bucket[0].open,
+                high=max(candle.high for candle in bucket),
+                low=min(candle.low for candle in bucket),
+                close=bucket[-1].close,
+                volume=sum(volume_values) if volume_values else None,
+            )
+        )
+    return resampled
 
 
 def _yahoo_spark_symbols(normalized_symbol: str) -> list[str]:
@@ -598,6 +881,183 @@ def _yahoo_range_interval(
     if days <= 210:
         return "6mo", "1d"
     return "1y", "1d"
+
+
+def _ohlc_cache_key(
+    requested_symbol: str,
+    period: str,
+    custom_days: int | None,
+    interval_hours: int | None,
+) -> str:
+    return f"{normalize_symbol(requested_symbol)}:{period}:{custom_days or ''}:{interval_hours or ''}"
+
+
+def _ohlc_output_size(period: str, custom_days: int | None = None, interval_hours: int | None = None) -> int:
+    days = custom_days or _period_days(period)
+    if interval_hours:
+        return min(max(int((days * 24) / max(interval_hours, 1)) + 24, 50), 5000)
+    if days <= 7:
+        return 250
+    return min(max(days + 20, 50), 5000)
+
+
+def _twelve_data_symbol(requested_symbol: str) -> str | None:
+    normalized = normalize_symbol(requested_symbol)
+    symbols = {
+        "BTC-USD": "BTC/USD",
+        "ETH-USD": "ETH/USD",
+        "USDTRY=X": "USD/TRY",
+        "EURTRY=X": "EUR/TRY",
+        "^GSPC": "SPY",
+        "^IXIC": "QQQ",
+        "^DJI": "DIA",
+        "^RUT": "IWM",
+        "XU100.IS": "XU100",
+        "GC=F": "XAU/USD",
+        "SI=F": "XAG/USD",
+        "BZ=F": "BZ",
+        "CL=F": "CL",
+        "^GDAXI": "DAX",
+    }
+    if re.fullmatch(r"[A-Z]{1,5}", normalized):
+        return normalized
+    return symbols.get(normalized)
+
+
+def _finnhub_symbol(requested_symbol: str) -> str | None:
+    normalized = normalize_symbol(requested_symbol)
+    symbols = {
+        "BTC-USD": "BINANCE:BTCUSDT",
+        "ETH-USD": "BINANCE:ETHUSDT",
+    }
+    if re.fullmatch(r"[A-Z]{1,5}", normalized):
+        return normalized
+    return symbols.get(normalized)
+
+
+def _alpha_vantage_symbol(requested_symbol: str) -> str | None:
+    normalized = normalize_symbol(requested_symbol)
+    if re.fullmatch(r"[A-Z]{1,5}", normalized):
+        return normalized
+    return None
+
+
+def _twelve_data_interval(
+    period: str,
+    custom_days: int | None = None,
+    interval_hours: int | None = None,
+) -> str:
+    if interval_hours:
+        return f"{interval_hours}h"
+    days = custom_days or _period_days(period)
+    return "1h" if days <= 7 else "1day"
+
+
+def _finnhub_resolution(custom_days: int | None = None, interval_hours: int | None = None) -> str:
+    if interval_hours:
+        return str(interval_hours * 60)
+    if custom_days is not None and custom_days <= 7:
+        return "60"
+    return "D"
+
+
+def _unix_date_range(period: str, custom_days: int | None = None) -> tuple[int, int]:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=custom_days if custom_days is not None else _period_days(period))
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def _parse_twelve_data_ohlc(data: dict[str, Any]) -> list[OHLCPoint]:
+    candles = []
+    for row in data.get("values") or []:
+        try:
+            candles.append(
+                OHLCPoint(
+                    time=_parse_provider_datetime(str(row["datetime"])),
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    volume=_optional_float_value(row.get("volume")),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(candles, key=lambda candle: candle.time)
+
+
+def _parse_finnhub_ohlc(data: dict[str, Any]) -> list[OHLCPoint]:
+    timestamps = data.get("t") or []
+    opens = data.get("o") or []
+    highs = data.get("h") or []
+    lows = data.get("l") or []
+    closes = data.get("c") or []
+    volumes = data.get("v") or []
+    candles = []
+    for index, timestamp in enumerate(timestamps):
+        try:
+            candles.append(
+                OHLCPoint(
+                    time=datetime.fromtimestamp(float(timestamp)),
+                    open=float(opens[index]),
+                    high=float(highs[index]),
+                    low=float(lows[index]),
+                    close=float(closes[index]),
+                    volume=_optional_float_value(volumes[index] if index < len(volumes) else None),
+                )
+            )
+        except (IndexError, TypeError, ValueError, OSError):
+            continue
+    return candles
+
+
+def _parse_alpha_vantage_ohlc(data: dict[str, Any]) -> list[OHLCPoint]:
+    series_key = next((key for key in data if key.startswith("Time Series")), None)
+    if not series_key:
+        return []
+    candles = []
+    for timestamp, row in (data.get(series_key) or {}).items():
+        try:
+            candles.append(
+                OHLCPoint(
+                    time=_parse_provider_datetime(str(timestamp)),
+                    open=float(row["1. open"]),
+                    high=float(row["2. high"]),
+                    low=float(row["3. low"]),
+                    close=float(row["4. close"]),
+                    volume=_optional_float_value(row.get("5. volume")),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(candles, key=lambda candle: candle.time)
+
+
+def _parse_provider_datetime(value: str) -> datetime:
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def _optional_float_value(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candle_width(x_values: list[float]) -> float:
+    if len(x_values) < 2:
+        return 0.5
+    gaps = [right - left for left, right in zip(x_values, x_values[1:], strict=False) if right > left]
+    if not gaps:
+        return 0.5
+    return min(gaps) * 0.65
 
 
 def _period_days(period: str) -> int:

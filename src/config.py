@@ -113,6 +113,10 @@ class Settings:
     market_default_symbols: list[str] = field(default_factory=lambda: list(DEFAULT_MARKET_SYMBOLS))
     request_timeout_seconds: float = 8.0
     stooq_api_key: str | None = None
+    twelve_data_api_key: str | None = None
+    finnhub_api_key: str | None = None
+    alpha_vantage_api_key: str | None = None
+    chart_cache_ttl_seconds: int = 300
     news_max_items: int = 5
     news_move_threshold_percent: float = 2.0
 
@@ -167,6 +171,10 @@ class Settings:
             market_default_symbols=_csv(env, "MARKET_DEFAULT_SYMBOLS", DEFAULT_MARKET_SYMBOLS),
             request_timeout_seconds=_float(env, "REQUEST_TIMEOUT_SECONDS", 8.0),
             stooq_api_key=_optional(env.get("STOOQ_API_KEY")),
+            twelve_data_api_key=_optional(env.get("TWELVE_DATA_API_KEY")),
+            finnhub_api_key=_optional(env.get("FINNHUB_API_KEY")),
+            alpha_vantage_api_key=_optional(env.get("ALPHA_VANTAGE_API_KEY")),
+            chart_cache_ttl_seconds=_int(env, "CHART_CACHE_TTL_SECONDS", 300),
             news_max_items=_int(env, "NEWS_MAX_ITEMS", 5),
             news_move_threshold_percent=_float(env, "NEWS_MOVE_THRESHOLD_PERCENT", 2.0),
             memory_max_messages=_int(env, "MEMORY_MAX_MESSAGES", 10),

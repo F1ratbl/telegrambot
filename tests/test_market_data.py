@@ -471,6 +471,67 @@ def test_price_chart_builds_request_from_model_interpretation() -> None:
     assert request == ChartRequest("AMD", "7d", custom_days=4, interval_hours=4)
 
 
+def test_settings_loads_ohlc_provider_keys() -> None:
+    settings = Settings.from_env(
+        {
+            "TWELVE_DATA_API_KEY": "td_key",
+            "FINNHUB_API_KEY": "fh_key",
+            "ALPHA_VANTAGE_API_KEY": "av_key",
+            "CHART_CACHE_TTL_SECONDS": "120",
+        }
+    )
+
+    assert settings.twelve_data_api_key == "td_key"
+    assert settings.finnhub_api_key == "fh_key"
+    assert settings.alpha_vantage_api_key == "av_key"
+    assert settings.chart_cache_ttl_seconds == 120
+
+
+def test_price_chart_fetches_twelve_data_ohlc_and_caches(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_get(url, **kwargs):
+        calls.append({"url": url, "params": kwargs["params"]})
+        return _FakeHttpResponse(
+            200,
+            data={
+                "status": "ok",
+                "values": [
+                    {
+                        "datetime": "2026-05-09 10:00:00",
+                        "open": "100",
+                        "high": "104",
+                        "low": "99",
+                        "close": "103",
+                        "volume": "1200",
+                    },
+                    {
+                        "datetime": "2026-05-09 14:00:00",
+                        "open": "103",
+                        "high": "106",
+                        "low": "101",
+                        "close": "105",
+                        "volume": "1400",
+                    },
+                ],
+            },
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting._cutoff_datetime", lambda period, custom_days=None: datetime(2026, 5, 9))
+    tool = PriceChartTool(Settings(twelve_data_api_key="td_key"))
+
+    first = tool._fetch_ohlc_history("AMD", "7d", custom_days=4, interval_hours=4)
+    second = tool._fetch_ohlc_history("AMD", "7d", custom_days=4, interval_hours=4)
+
+    assert [candle.close for candle in first] == [103.0, 105.0]
+    assert second == first
+    assert len(calls) == 1
+    assert calls[0]["params"]["symbol"] == "AMD"
+    assert calls[0]["params"]["interval"] == "4h"
+    assert calls[0]["params"]["apikey"] == "td_key"
+
+
 def test_price_chart_parses_custom_day_range_and_hour_interval() -> None:
     tool = PriceChartTool(Settings())
 
