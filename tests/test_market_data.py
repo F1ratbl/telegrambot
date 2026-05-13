@@ -91,6 +91,9 @@ class _FailingImageModels:
     def generate_images(self, model, prompt, config):
         raise RuntimeError("429 RESOURCE_EXHAUSTED")
 
+    def generate_content(self, model, contents, config):
+        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
 
 class _FailingImageClient:
     models = _FailingImageModels()
@@ -108,13 +111,29 @@ class _FakeGenerateImagesResponse:
     generated_images = [_FakeGeneratedImage()]
 
 
+class _FakeInlineImageData:
+    data = b"gemini-image-bytes"
+
+
+class _FakeImagePart:
+    inline_data = _FakeInlineImageData()
+
+
+class _FakeGenerateContentImageResponse:
+    parts = [_FakeImagePart()]
+
+
 class _RecordingImageModels:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
     def generate_images(self, model, prompt, config):
-        self.calls.append({"model": model, "prompt": prompt, "config": config})
+        self.calls.append({"method": "generate_images", "model": model, "prompt": prompt, "config": config})
         return _FakeGenerateImagesResponse()
+
+    def generate_content(self, model, contents, config):
+        self.calls.append({"method": "generate_content", "model": model, "contents": contents, "config": config})
+        return _FakeGenerateContentImageResponse()
 
 
 class _RecordingImageClient:
@@ -427,6 +446,25 @@ def test_visual_generator_uses_imagen_generate_images_for_creative_visuals() -> 
     assert "ekonomi botu" in client.models.calls[0]["prompt"]
 
 
+def test_visual_generator_uses_gemini_flash_image_generate_content() -> None:
+    client = _RecordingImageClient()
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            gemini_image_model="gemini-2.5-flash-image",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("hisse bölünmesini görselle anlat")
+
+    assert image == b"gemini-image-bytes"
+    assert caption == "Ekonomi gorseli"
+    assert client.models.calls[0]["method"] == "generate_content"
+    assert client.models.calls[0]["model"] == "gemini-2.5-flash-image"
+    assert "hisse bölünmesini" in client.models.calls[0]["contents"][0]
+
+
 def test_visual_generator_ignores_huggingface_when_disabled(monkeypatch) -> None:
     calls: list[dict] = []
 
@@ -451,10 +489,11 @@ def test_visual_generator_ignores_huggingface_when_disabled(monkeypatch) -> None
 
     image, caption = generator.generate("ekonomi botu için modern görsel oluştur")
 
-    assert image == b"imagen-bytes"
+    assert image == b"gemini-image-bytes"
     assert caption == "Ekonomi gorseli"
     assert calls == []
-    assert client.models.calls[0]["model"] == "imagen-4.0-ultra-generate-001"
+    assert client.models.calls[0]["method"] == "generate_content"
+    assert client.models.calls[0]["model"] == "gemini-2.5-flash-image"
 
 
 def test_visual_generator_uses_huggingface_when_enabled(monkeypatch) -> None:

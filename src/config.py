@@ -92,7 +92,7 @@ class Settings:
     gemini_thinking_level: str | None = None
     gemini_retry_attempts: int = 3
     gemini_retry_base_delay_seconds: float = 1.5
-    gemini_image_model: str = "imagen-4.0-ultra-generate-001"
+    gemini_image_model: str = "gemini-2.5-flash-image"
     image_generation_enabled: bool = True
     huggingface_api_key: str | None = None
     huggingface_image_model: str = "black-forest-labs/FLUX.1-schnell"
@@ -138,7 +138,7 @@ class Settings:
             gemini_thinking_level=_optional(env.get("GEMINI_THINKING_LEVEL")),
             gemini_retry_attempts=_int(env, "GEMINI_RETRY_ATTEMPTS", 3),
             gemini_retry_base_delay_seconds=_float(env, "GEMINI_RETRY_BASE_DELAY_SECONDS", 1.5),
-            gemini_image_model=_optional(env.get("GEMINI_IMAGE_MODEL")) or "imagen-4.0-ultra-generate-001",
+            gemini_image_model=_optional(env.get("GEMINI_IMAGE_MODEL")) or "gemini-2.5-flash-image",
             image_generation_enabled=_bool(env, "IMAGE_GENERATION_ENABLED", True),
             huggingface_api_key=(
                 _optional(env.get("HUGGINGFACE_API_KEY"))

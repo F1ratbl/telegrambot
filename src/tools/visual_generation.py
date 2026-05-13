@@ -59,8 +59,19 @@ class EconomyVisualGenerator:
             self._client = genai.Client(api_key=self.settings.google_api_key)
 
         try:
+            image = self._generate_with_google(prompt, types)
+            if image:
+                return image, "Ekonomi gorseli"
+            logger.warning("Gemini image model returned no image; using fallback infographic.")
+        except Exception as exc:
+            logger.warning("Gemini image generation failed; using fallback infographic: %s", exc)
+        return self._render_fallback_infographic(request_text), "Ekonomi semasi"
+
+    def _generate_with_google(self, prompt: str, types: Any) -> bytes | None:
+        model = self.settings.gemini_image_model.strip()
+        if model.lower().startswith("imagen-"):
             response = self._client.models.generate_images(
-                model=self.settings.gemini_image_model,
+                model=model,
                 prompt=prompt,
                 config=types.GenerateImagesConfig(
                     number_of_images=1,
@@ -68,13 +79,14 @@ class EconomyVisualGenerator:
                     output_mime_type="image/png",
                 ),
             )
-            image = self._extract_image_bytes(response)
-            if image:
-                return image, "Ekonomi gorseli"
-            logger.warning("Gemini image model returned no image; using fallback infographic.")
-        except Exception as exc:
-            logger.warning("Gemini image generation failed; using fallback infographic: %s", exc)
-        return self._render_fallback_infographic(request_text), "Ekonomi semasi"
+            return self._extract_image_bytes(response)
+
+        response = self._client.models.generate_content(
+            model=model,
+            contents=[prompt],
+            config=types.GenerateContentConfig(response_modalities=["Image"]),
+        )
+        return self._extract_image_bytes(response)
 
     def _generate_with_huggingface(self, prompt: str) -> bytes | None:
         import requests
@@ -144,20 +156,16 @@ class EconomyVisualGenerator:
             if image_bytes:
                 return image_bytes
 
+        image = _extract_from_parts(getattr(response, "parts", None) or [])
+        if image:
+            return image
+
         candidates = getattr(response, "candidates", None) or []
         for candidate in candidates:
             content = getattr(candidate, "content", None)
-            for part in getattr(content, "parts", None) or []:
-                inline_data = getattr(part, "inline_data", None)
-                data = getattr(inline_data, "data", None)
-                if data:
-                    if isinstance(data, bytes):
-                        return data
-                    if isinstance(data, str):
-                        try:
-                            return base64.b64decode(data)
-                        except Exception:
-                            return data.encode("utf-8")
+            image = _extract_from_parts(getattr(content, "parts", None) or [])
+            if image:
+                return image
         return None
 
     def _render_fallback_infographic(self, request_text: str) -> bytes:
@@ -269,6 +277,34 @@ def _clean_topic(text: str) -> str:
     )
     clean = re.sub(r"\s+", " ", clean).strip(" .,:;!?")
     return clean or "Ekonomi konusu"
+
+
+def _extract_from_parts(parts: list[Any]) -> bytes | None:
+    for part in parts:
+        inline_data = getattr(part, "inline_data", None)
+        data = getattr(inline_data, "data", None)
+        if data:
+            if isinstance(data, bytes):
+                return data
+            if isinstance(data, str):
+                try:
+                    return base64.b64decode(data)
+                except Exception:
+                    return data.encode("utf-8")
+
+        as_image = getattr(part, "as_image", None)
+        if not callable(as_image):
+            continue
+        try:
+            image = as_image()
+        except Exception:
+            continue
+        if image is None:
+            continue
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+    return None
 
 
 def _shorten(text: str, limit: int) -> str:
