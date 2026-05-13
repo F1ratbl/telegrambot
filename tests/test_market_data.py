@@ -436,6 +436,7 @@ def test_visual_generator_uses_huggingface_before_imagen(monkeypatch) -> None:
     assert image == b"hf-image-bytes"
     assert caption == "Ekonomi gorseli"
     assert calls[0]["headers"]["Authorization"] == "Bearer hf_test"
+    assert calls[0]["headers"]["Accept"] == "image/png"
     assert "black-forest-labs/FLUX.1-schnell" in calls[0]["url"]
     assert client.models.calls == []
 

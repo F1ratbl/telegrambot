@@ -85,7 +85,7 @@ class EconomyVisualGenerator:
 
         headers = {
             "Authorization": f"Bearer {self.settings.huggingface_api_key}",
-            "Accept": "image/png,image/jpeg,application/json",
+            "Accept": "image/png",
             "Content-Type": "application/json",
         }
         payload = {
