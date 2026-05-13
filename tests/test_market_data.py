@@ -391,7 +391,7 @@ def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:
     assert image.startswith(b"\x89PNG")
 
 
-def test_visual_generator_uses_imagen_generate_images() -> None:
+def test_visual_generator_uses_deterministic_diagram_for_finance_concepts() -> None:
     client = _RecordingImageClient()
     generator = EconomyVisualGenerator(
         Settings(
@@ -401,12 +401,29 @@ def test_visual_generator_uses_imagen_generate_images() -> None:
     )
     generator._client = client
 
-    image, caption = generator.generate("enflasyon faiz ilişkisini infografik yap")
+    image, caption = generator.generate("hisse bölünmesini görselle anlat")
+
+    assert image.startswith(b"\x89PNG")
+    assert caption == "Ekonomi semasi"
+    assert client.models.calls == []
+
+
+def test_visual_generator_uses_imagen_generate_images_for_creative_visuals() -> None:
+    client = _RecordingImageClient()
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            gemini_image_model="imagen-4.0-ultra-generate-001",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("ekonomi botu için modern görsel oluştur")
 
     assert image == b"imagen-bytes"
     assert caption == "Ekonomi gorseli"
     assert client.models.calls[0]["model"] == "imagen-4.0-ultra-generate-001"
-    assert "enflasyon faiz" in client.models.calls[0]["prompt"]
+    assert "ekonomi botu" in client.models.calls[0]["prompt"]
 
 
 def test_visual_generator_uses_huggingface_before_imagen(monkeypatch) -> None:
@@ -431,7 +448,7 @@ def test_visual_generator_uses_huggingface_before_imagen(monkeypatch) -> None:
     )
     generator._client = client
 
-    image, caption = generator.generate("hisse bölünmesini görselle anlat")
+    image, caption = generator.generate("ekonomi botu için modern görsel oluştur")
 
     assert image == b"hf-image-bytes"
     assert caption == "Ekonomi gorseli"

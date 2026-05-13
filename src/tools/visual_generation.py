@@ -40,6 +40,9 @@ class EconomyVisualGenerator:
         return text.strip()
 
     def generate(self, request_text: str) -> tuple[bytes, str]:
+        if self._should_use_deterministic_diagram(request_text):
+            return self._render_fallback_infographic(request_text), "Ekonomi semasi"
+
         if not self.settings.image_enabled:
             return self._render_fallback_infographic(request_text), "Ekonomi semasi"
 
@@ -129,11 +132,49 @@ class EconomyVisualGenerator:
 
     def _build_prompt(self, request_text: str) -> str:
         return (
-            "Turkce ekonomi ve finans egitimi icin sade, profesyonel bir infografik uret. "
-            "Gorselde yaniltici fiyat, sahte grafik veya kesin yatirim tavsiyesi olmasin. "
-            "Kisa basliklar, net oklar ve finansal analiz mantigina uygun akış kullan. "
-            "Telegram'da okunacak sekilde temiz, modern ve yuksek kontrastli tasarla. "
+            "Create a clean Turkish finance education illustration. Avoid fake numbers, fake maps, "
+            "fake price charts, random flags, random labels, tiny unreadable text, and investment advice. "
+            "Use simple visual metaphors, clear spacing, and at most three short Turkish labels. "
+            "The image must directly explain the requested concept, not a generic market dashboard. "
             f"Konu: {request_text}"
+        )
+
+    def _should_use_deterministic_diagram(self, request_text: str) -> bool:
+        lowered = request_text.lower()
+        deterministic_markers = [
+            "görselle anlat",
+            "gorselle anlat",
+            "infografik",
+            "şema",
+            "sema",
+            "kavram",
+            "nedir",
+            "ne demek",
+            "ne anlama",
+        ]
+        finance_concepts = [
+            "dilution",
+            "sulanma",
+            "hisse bölünmesi",
+            "hisse bolunmesi",
+            "bedelli",
+            "bedelsiz",
+            "sermaye artırımı",
+            "sermaye artirimi",
+            "açığa satış",
+            "aciga satis",
+            "rüçhan",
+            "ruchan",
+            "temettü",
+            "temettu",
+            "convertible",
+            "tahvil",
+            "brüt takas",
+            "brut takas",
+            "devre kesici",
+        ]
+        return any(marker in lowered for marker in deterministic_markers) and any(
+            concept in lowered for concept in finance_concepts
         )
 
     def _extract_image_bytes(self, response: Any) -> bytes | None:
