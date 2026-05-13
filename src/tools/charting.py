@@ -29,6 +29,8 @@ PERIOD_ALIASES = {
 class ChartRequest:
     symbol: str
     period: str
+    custom_days: int | None = None
+    interval_hours: int | None = None
 
 
 class PriceChartTool:
@@ -62,18 +64,29 @@ class PriceChartTool:
         symbol = self._extract_symbol(text)
         if not symbol:
             return None
-        return ChartRequest(symbol=symbol, period=self._extract_period(lowered))
+        return ChartRequest(
+            symbol=symbol,
+            period=self._extract_period(lowered),
+            custom_days=self._extract_custom_days(lowered),
+            interval_hours=self._extract_interval_hours(lowered),
+        )
 
     def create_price_chart(self, request: ChartRequest) -> tuple[bytes, str]:
-        caption = f"{DISPLAY_NAMES.get(normalize_symbol(request.symbol), request.symbol.upper())} {PERIOD_ALIASES[request.period][2]} fiyat grafigi"
+        period_label = _period_label(request.period, request.custom_days, request.interval_hours)
+        caption = f"{DISPLAY_NAMES.get(normalize_symbol(request.symbol), request.symbol.upper())} {period_label} fiyat grafigi"
         try:
-            points = self._fetch_history(request.symbol, request.period)
+            points = self._fetch_history(
+                request.symbol,
+                request.period,
+                custom_days=request.custom_days,
+                interval_hours=request.interval_hours,
+            )
         except Exception as exc:
             logger.warning("Price chart data unavailable for %s: %s", request.symbol, exc)
-            return self._render_unavailable_chart(request.symbol, request.period), f"{caption} - veri gecici olarak alinamadi"
+            return self._render_unavailable_chart(request.symbol, request.period, request.custom_days, request.interval_hours), f"{caption} - veri gecici olarak alinamadi"
         if len(points) < 2:
-            return self._render_unavailable_chart(request.symbol, request.period), f"{caption} - veri gecici olarak alinamadi"
-        image = self._render_chart(request.symbol, request.period, points)
+            return self._render_unavailable_chart(request.symbol, request.period, request.custom_days, request.interval_hours), f"{caption} - veri gecici olarak alinamadi"
+        image = self._render_chart(request.symbol, request.period, points, request.custom_days, request.interval_hours)
         return image, caption
 
     def _extract_symbol(self, text: str) -> str | None:
@@ -106,6 +119,17 @@ class PriceChartTool:
         return None
 
     def _extract_period(self, lowered: str) -> str:
+        custom_days = self._extract_custom_days(lowered)
+        if custom_days is not None:
+            if custom_days <= 7:
+                return "7d"
+            if custom_days <= 45:
+                return "1mo"
+            if custom_days <= 110:
+                return "3mo"
+            if custom_days <= 210:
+                return "6mo"
+            return "1y"
         if any(marker in lowered for marker in ["7 gün", "7 gun", "1 hafta", "haftalık", "haftalik"]):
             return "7d"
         if any(marker in lowered for marker in ["3 ay", "3 aylık", "3 aylik"]):
@@ -116,39 +140,73 @@ class PriceChartTool:
             return "1y"
         return "1mo"
 
-    def _fetch_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+    def _extract_custom_days(self, lowered: str) -> int | None:
+        patterns = [
+            r"\bson\s+(\d{1,3})\s*g[uü]n(?:[üu]n|luk|l[uü]k)?\b",
+            r"\b(\d{1,3})\s*g[uü]nl[uü]k\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, lowered)
+            if not match:
+                continue
+            days = int(match.group(1))
+            return min(max(days, 1), 365)
+        return None
+
+    def _extract_interval_hours(self, lowered: str) -> int | None:
+        match = re.search(r"\b(\d{1,2})\s*saat(?:lik|lık|lik|lik)?\b", lowered)
+        if not match:
+            return None
+        hours = int(match.group(1))
+        if hours <= 0:
+            return None
+        return min(hours, 24)
+
+    def _fetch_history(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> list[tuple[datetime, float]]:
         errors: list[str] = []
         try:
-            return self._fetch_yahoo_history(requested_symbol, period)
+            return self._fetch_yahoo_history(requested_symbol, period, custom_days, interval_hours)
         except Exception as exc:
             errors.append(f"Yahoo: {exc}")
             logger.info("Yahoo history failed for %s, trying next provider: %s", requested_symbol, exc)
 
         try:
-            return self._fetch_yahoo_spark_history(requested_symbol, period)
+            return self._fetch_yahoo_spark_history(requested_symbol, period, custom_days, interval_hours)
         except Exception as exc:
             errors.append(f"Yahoo spark: {exc}")
             logger.info("Yahoo spark history failed for %s, trying next provider: %s", requested_symbol, exc)
 
         try:
-            return self._fetch_nasdaq_history(requested_symbol, period)
+            return self._fetch_nasdaq_history(requested_symbol, period, custom_days)
         except Exception as exc:
             errors.append(f"Nasdaq: {exc}")
             logger.info("Nasdaq history failed for %s, trying next provider: %s", requested_symbol, exc)
 
         try:
-            return self._fetch_stooq_history(requested_symbol, period)
+            return self._fetch_stooq_history(requested_symbol, period, custom_days)
         except Exception as exc:
             errors.append(f"Stooq: {exc}")
             logger.info("Stooq history failed for %s, trying next provider: %s", requested_symbol, exc)
 
         raise RuntimeError("; ".join(errors) or "Grafik verisi alinamadi.")
 
-    def _fetch_yahoo_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+    def _fetch_yahoo_history(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> list[tuple[datetime, float]]:
         import requests
 
         symbol = normalize_symbol(requested_symbol)
-        range_value, interval, _ = PERIOD_ALIASES[period]
+        range_value, interval = _yahoo_range_interval(period, custom_days, interval_hours)
         response = None
         last_exception: Exception | None = None
         for url_template in self.yahoo_chart_urls:
@@ -167,6 +225,7 @@ class PriceChartTool:
                     response.raise_for_status()
                     data = response.json()
                     points = self._parse_yahoo_points(data)
+                    points = _post_process_points(points, custom_days, interval_hours)
                     if points:
                         return points
                     raise RuntimeError("Yahoo chart response did not include close prices.")
@@ -175,11 +234,17 @@ class PriceChartTool:
                     continue
         raise last_exception or RuntimeError("Yahoo chart request failed.")
 
-    def _fetch_yahoo_spark_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+    def _fetch_yahoo_spark_history(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> list[tuple[datetime, float]]:
         import requests
 
         symbol = normalize_symbol(requested_symbol)
-        range_value, interval, _ = PERIOD_ALIASES[period]
+        range_value, interval = _yahoo_range_interval(period, custom_days, interval_hours)
         errors: list[str] = []
         for spark_symbol in _yahoo_spark_symbols(symbol):
             for url in self.yahoo_spark_urls:
@@ -192,6 +257,7 @@ class PriceChartTool:
                 try:
                     response.raise_for_status()
                     points = self._parse_yahoo_spark_points(response.json(), spark_symbol)
+                    points = _post_process_points(points, custom_days, interval_hours)
                     if points:
                         return points
                     errors.append(f"{spark_symbol}: empty")
@@ -199,7 +265,12 @@ class PriceChartTool:
                     errors.append(f"{spark_symbol}: {exc}")
         raise RuntimeError("; ".join(errors) or "Yahoo spark response did not include close prices.")
 
-    def _fetch_nasdaq_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+    def _fetch_nasdaq_history(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+    ) -> list[tuple[datetime, float]]:
         import requests
 
         nasdaq_symbol = _nasdaq_symbol(requested_symbol)
@@ -207,7 +278,7 @@ class PriceChartTool:
             raise RuntimeError("Nasdaq fallback does not support this symbol.")
 
         symbol, assetclass = nasdaq_symbol
-        start, end = _nasdaq_date_range(period)
+        start, end = _nasdaq_date_range(period, custom_days)
         response = requests.get(
             self.nasdaq_historical_url.format(symbol=symbol),
             params={
@@ -224,7 +295,7 @@ class PriceChartTool:
             timeout=max(self.settings.request_timeout_seconds, 15),
         )
         response.raise_for_status()
-        points = self._parse_nasdaq_points(response.json(), period)
+        points = self._parse_nasdaq_points(response.json(), period, custom_days)
         if points:
             return points
         raise RuntimeError("Nasdaq response did not include close prices.")
@@ -245,8 +316,8 @@ class PriceChartTool:
         close_values = result.get("close") or []
         return _points_from_timestamps_and_closes(timestamps, close_values)
 
-    def _parse_nasdaq_points(self, data: dict[str, Any], period: str) -> list[tuple[datetime, float]]:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_period_days(period))
+    def _parse_nasdaq_points(self, data: dict[str, Any], period: str, custom_days: int | None = None) -> list[tuple[datetime, float]]:
+        cutoff = _cutoff_datetime(period, custom_days)
         rows = (((data.get("data") or {}).get("tradesTable") or {}).get("rows") or [])
         points: list[tuple[datetime, float]] = []
         for row in rows:
@@ -263,8 +334,8 @@ class PriceChartTool:
                 points.append((date, close))
         return sorted(points, key=lambda item: item[0])
 
-    def _parse_stooq_points(self, csv_text: str, period: str) -> list[tuple[datetime, float]]:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_period_days(period))
+    def _parse_stooq_points(self, csv_text: str, period: str, custom_days: int | None = None) -> list[tuple[datetime, float]]:
+        cutoff = _cutoff_datetime(period, custom_days)
         points: list[tuple[datetime, float]] = []
         for row in csv.DictReader(StringIO(csv_text)):
             date_value = row.get("Date")
@@ -280,7 +351,7 @@ class PriceChartTool:
                 points.append((date, close))
         return points
 
-    def _fetch_stooq_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+    def _fetch_stooq_history(self, requested_symbol: str, period: str, custom_days: int | None = None) -> list[tuple[datetime, float]]:
         import requests
 
         stooq_symbols = _stooq_symbols(
@@ -290,7 +361,7 @@ class PriceChartTool:
         if not stooq_symbols:
             raise RuntimeError("Stooq fallback does not support this symbol.")
 
-        start, end = _stooq_date_range(period)
+        start, end = _stooq_date_range(period, custom_days)
         errors: list[str] = []
         for stooq_symbol in stooq_symbols:
             params = {"s": stooq_symbol, "i": "d", "d1": start, "d2": end}
@@ -307,7 +378,7 @@ class PriceChartTool:
                 if _stooq_requires_api_key(response.text):
                     errors.append(f"{stooq_symbol}: apikey required")
                     continue
-                points = self._parse_stooq_points(response.text, period)
+                points = self._parse_stooq_points(response.text, period, custom_days)
                 if points:
                     return points
                 errors.append(f"{stooq_symbol}: empty")
@@ -315,7 +386,14 @@ class PriceChartTool:
                 errors.append(f"{stooq_symbol}: {exc}")
         raise RuntimeError("; ".join(errors) or "Stooq response did not include close prices.")
 
-    def _render_chart(self, requested_symbol: str, period: str, points: list[tuple[datetime, float]]) -> bytes:
+    def _render_chart(
+        self,
+        requested_symbol: str,
+        period: str,
+        points: list[tuple[datetime, float]],
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> bytes:
         import matplotlib
 
         matplotlib.use("Agg")
@@ -332,12 +410,13 @@ class PriceChartTool:
         ax.set_facecolor("#ffffff")
         ax.plot(dates, prices, color="#2563eb", linewidth=2.4)
         ax.fill_between(dates, prices, min(prices), color="#dbeafe", alpha=0.55)
-        ax.set_title(f"{name} - {PERIOD_ALIASES[period][2]}", fontsize=14, fontweight="bold")
+        ax.set_title(f"{name} - {_period_label(period, custom_days, interval_hours)}", fontsize=14, fontweight="bold")
         ax.set_ylabel("Fiyat")
         ax.grid(True, color="#e5e7eb", linewidth=0.8)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d.%m"))
+        date_format = "%d.%m %H:%M" if interval_hours else "%d.%m"
+        ax.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
         fig.autofmt_xdate()
         fig.tight_layout()
 
@@ -346,7 +425,13 @@ class PriceChartTool:
         plt.close(fig)
         return output.getvalue()
 
-    def _render_unavailable_chart(self, requested_symbol: str, period: str) -> bytes:
+    def _render_unavailable_chart(
+        self,
+        requested_symbol: str,
+        period: str,
+        custom_days: int | None = None,
+        interval_hours: int | None = None,
+    ) -> bytes:
         import matplotlib
 
         matplotlib.use("Agg")
@@ -391,7 +476,7 @@ class PriceChartTool:
         ax.text(
             0.5,
             0.26,
-            f"İstenen dönem: {PERIOD_ALIASES[period][2]}",
+            f"İstenen dönem: {_period_label(period, custom_days, interval_hours)}",
             ha="center",
             va="center",
             fontsize=10,
@@ -425,6 +510,34 @@ def _points_from_timestamps_and_closes(timestamps: list[Any], close_values: list
     return points
 
 
+def _post_process_points(
+    points: list[tuple[datetime, float]],
+    custom_days: int | None,
+    interval_hours: int | None,
+) -> list[tuple[datetime, float]]:
+    if custom_days is not None:
+        cutoff = datetime.now() - timedelta(days=custom_days)
+        points = [point for point in points if point[0] >= cutoff]
+    if interval_hours and interval_hours > 1:
+        points = _resample_points_by_hours(points, interval_hours)
+    return points
+
+
+def _resample_points_by_hours(points: list[tuple[datetime, float]], interval_hours: int) -> list[tuple[datetime, float]]:
+    if not points:
+        return []
+    buckets: dict[datetime, tuple[datetime, float]] = {}
+    for point_time, price in sorted(points, key=lambda item: item[0]):
+        bucket_time = point_time.replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+            hour=(point_time.hour // interval_hours) * interval_hours,
+        )
+        buckets[bucket_time] = (bucket_time, price)
+    return [buckets[key] for key in sorted(buckets)]
+
+
 def _yahoo_spark_symbols(normalized_symbol: str) -> list[str]:
     proxy_symbols = {
         "^GSPC": ["SPY"],
@@ -433,6 +546,45 @@ def _yahoo_spark_symbols(normalized_symbol: str) -> list[str]:
         "^RUT": ["IWM"],
     }
     return [normalized_symbol, *proxy_symbols.get(normalized_symbol, [])]
+
+
+def _period_label(period: str, custom_days: int | None = None, interval_hours: int | None = None) -> str:
+    base = f"son {custom_days} gun" if custom_days is not None else PERIOD_ALIASES[period][2]
+    if interval_hours:
+        return f"{interval_hours} saatlik, {base}"
+    return base
+
+
+def _yahoo_range_interval(
+    period: str,
+    custom_days: int | None = None,
+    interval_hours: int | None = None,
+) -> tuple[str, str]:
+    if custom_days is None and not interval_hours:
+        range_value, interval, _ = PERIOD_ALIASES[period]
+        return range_value, interval
+
+    days = custom_days or _period_days(period)
+    if interval_hours:
+        if days <= 5:
+            return "5d", "1h"
+        if days <= 7:
+            return "7d", "1h"
+        if days <= 60:
+            return "60d", "1h"
+        return "1y", "1d"
+
+    if days <= 5:
+        return "5d", "1h"
+    if days <= 7:
+        return "7d", "1h"
+    if days <= 45:
+        return "1mo", "1d"
+    if days <= 110:
+        return "3mo", "1d"
+    if days <= 210:
+        return "6mo", "1d"
+    return "1y", "1d"
 
 
 def _period_days(period: str) -> int:
@@ -445,15 +597,20 @@ def _period_days(period: str) -> int:
     }.get(period, 45)
 
 
-def _stooq_date_range(period: str) -> tuple[str, str]:
+def _cutoff_datetime(period: str, custom_days: int | None = None) -> datetime:
+    days = custom_days if custom_days is not None else _period_days(period)
+    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+
+
+def _stooq_date_range(period: str, custom_days: int | None = None) -> tuple[str, str]:
     end = datetime.now(timezone.utc).replace(tzinfo=None)
-    start = end - timedelta(days=_period_days(period))
+    start = end - timedelta(days=custom_days if custom_days is not None else _period_days(period))
     return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
 
 
-def _nasdaq_date_range(period: str) -> tuple[str, str]:
+def _nasdaq_date_range(period: str, custom_days: int | None = None) -> tuple[str, str]:
     end = datetime.now(timezone.utc).replace(tzinfo=None)
-    start = end - timedelta(days=_period_days(period))
+    start = end - timedelta(days=custom_days if custom_days is not None else _period_days(period))
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
 

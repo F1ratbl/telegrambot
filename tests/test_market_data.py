@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
 from src.tools.charting import PriceChartTool
 from src.tools.news import NewsItem, NewsSearchClient, _filter_relevant_items, _rss_query_candidates
@@ -376,6 +378,18 @@ def test_webhook_chart_request_returns_photo_without_agent() -> None:
     assert agent.messages == []
     assert telegram.photos[0]["image"] == b"chart-bytes"
     assert telegram.photos[0]["caption"] == "Altin grafigi"
+
+
+def test_price_chart_parses_custom_day_range_and_hour_interval() -> None:
+    tool = PriceChartTool(Settings())
+
+    request = tool.parse_request("amd 4 saatlik grafik çiz son 4 günün")
+
+    assert request is not None
+    assert request.symbol == "AMD"
+    assert request.period == "7d"
+    assert request.custom_days == 4
+    assert request.interval_hours == 4
 
 
 def test_webhook_visual_request_returns_photo_without_agent() -> None:
@@ -776,6 +790,48 @@ def test_price_chart_uses_yahoo_spark_when_chart_endpoint_is_rate_limited(monkey
     assert any("/v8/finance/chart/" in call for call in calls)
     assert any("/v8/finance/spark" in call for call in calls)
     assert not any("stooq.com" in call for call in calls)
+
+
+def test_price_chart_fetches_custom_intraday_range_and_resamples(monkeypatch) -> None:
+    params_seen: list[dict] = []
+    now = datetime.now().replace(minute=0, second=0, microsecond=0)
+    timestamps = [
+        int((now - timedelta(hours=5)).timestamp()),
+        int((now - timedelta(hours=4)).timestamp()),
+        int((now - timedelta(hours=2)).timestamp()),
+        int((now - timedelta(hours=1)).timestamp()),
+        int(now.timestamp()),
+    ]
+
+    def fake_get(url, **kwargs):
+        params_seen.append(kwargs["params"])
+        return _FakeHttpResponse(
+            200,
+            data={
+                "chart": {
+                    "result": [
+                        {
+                            "timestamp": timestamps,
+                            "indicators": {
+                                "quote": [
+                                    {"close": [100.0, 101.0, 104.0, 105.0, 108.0]}
+                                ]
+                            },
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    tool = PriceChartTool(Settings())
+    points = tool._fetch_history("AMD", "7d", custom_days=4, interval_hours=4)
+
+    assert params_seen[0]["range"] == "5d"
+    assert params_seen[0]["interval"] == "1h"
+    assert len(points) < len(timestamps)
+    assert points[-1][1] == 108.0
 
 
 def test_price_chart_uses_yahoo_spark_etf_proxy_when_index_is_rate_limited(monkeypatch) -> None:
