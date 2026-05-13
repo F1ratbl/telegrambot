@@ -36,6 +36,11 @@ class PriceChartTool:
         "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
         "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
     )
+    yahoo_spark_urls = (
+        "https://query1.finance.yahoo.com/v8/finance/spark",
+        "https://query2.finance.yahoo.com/v8/finance/spark",
+    )
+    nasdaq_historical_url = "https://api.nasdaq.com/api/quote/{symbol}/historical"
     stooq_daily_url = "https://stooq.com/q/d/l/"
     headers = {
         "User-Agent": (
@@ -117,13 +122,25 @@ class PriceChartTool:
             return self._fetch_yahoo_history(requested_symbol, period)
         except Exception as exc:
             errors.append(f"Yahoo: {exc}")
-            logger.warning("Yahoo history failed for %s: %s", requested_symbol, exc)
+            logger.info("Yahoo history failed for %s, trying next provider: %s", requested_symbol, exc)
+
+        try:
+            return self._fetch_yahoo_spark_history(requested_symbol, period)
+        except Exception as exc:
+            errors.append(f"Yahoo spark: {exc}")
+            logger.info("Yahoo spark history failed for %s, trying next provider: %s", requested_symbol, exc)
+
+        try:
+            return self._fetch_nasdaq_history(requested_symbol, period)
+        except Exception as exc:
+            errors.append(f"Nasdaq: {exc}")
+            logger.info("Nasdaq history failed for %s, trying next provider: %s", requested_symbol, exc)
 
         try:
             return self._fetch_stooq_history(requested_symbol, period)
         except Exception as exc:
             errors.append(f"Stooq: {exc}")
-            logger.warning("Stooq history failed for %s: %s", requested_symbol, exc)
+            logger.info("Stooq history failed for %s, trying next provider: %s", requested_symbol, exc)
 
         raise RuntimeError("; ".join(errors) or "Grafik verisi alinamadi.")
 
@@ -158,21 +175,118 @@ class PriceChartTool:
                     continue
         raise last_exception or RuntimeError("Yahoo chart request failed.")
 
+    def _fetch_yahoo_spark_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+        import requests
+
+        symbol = normalize_symbol(requested_symbol)
+        range_value, interval, _ = PERIOD_ALIASES[period]
+        errors: list[str] = []
+        for spark_symbol in _yahoo_spark_symbols(symbol):
+            for url in self.yahoo_spark_urls:
+                response = requests.get(
+                    url,
+                    params={"symbols": spark_symbol, "range": range_value, "interval": interval},
+                    headers=self.headers,
+                    timeout=self.settings.request_timeout_seconds,
+                )
+                try:
+                    response.raise_for_status()
+                    points = self._parse_yahoo_spark_points(response.json(), spark_symbol)
+                    if points:
+                        return points
+                    errors.append(f"{spark_symbol}: empty")
+                except Exception as exc:
+                    errors.append(f"{spark_symbol}: {exc}")
+        raise RuntimeError("; ".join(errors) or "Yahoo spark response did not include close prices.")
+
+    def _fetch_nasdaq_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+        import requests
+
+        nasdaq_symbol = _nasdaq_symbol(requested_symbol)
+        if nasdaq_symbol is None:
+            raise RuntimeError("Nasdaq fallback does not support this symbol.")
+
+        symbol, assetclass = nasdaq_symbol
+        start, end = _nasdaq_date_range(period)
+        response = requests.get(
+            self.nasdaq_historical_url.format(symbol=symbol),
+            params={
+                "assetclass": assetclass,
+                "fromdate": start,
+                "todate": end,
+                "limit": 9999,
+            },
+            headers={
+                **self.headers,
+                "Origin": "https://www.nasdaq.com",
+                "Referer": "https://www.nasdaq.com/",
+            },
+            timeout=max(self.settings.request_timeout_seconds, 15),
+        )
+        response.raise_for_status()
+        points = self._parse_nasdaq_points(response.json(), period)
+        if points:
+            return points
+        raise RuntimeError("Nasdaq response did not include close prices.")
+
     def _parse_yahoo_points(self, data: dict[str, Any]) -> list[tuple[datetime, float]]:
         result = (((data.get("chart") or {}).get("result") or [None])[0]) or {}
         timestamps = result.get("timestamp") or []
         close_values = ((((result.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
+        return _points_from_timestamps_and_closes(timestamps, close_values)
+
+    def _parse_yahoo_spark_points(self, data: dict[str, Any], symbol: str) -> list[tuple[datetime, float]]:
+        result = data.get(symbol) or {}
+        if not result and data:
+            first_value = next(iter(data.values()), {})
+            if isinstance(first_value, dict):
+                result = first_value
+        timestamps = result.get("timestamp") or []
+        close_values = result.get("close") or []
+        return _points_from_timestamps_and_closes(timestamps, close_values)
+
+    def _parse_nasdaq_points(self, data: dict[str, Any], period: str) -> list[tuple[datetime, float]]:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_period_days(period))
+        rows = (((data.get("data") or {}).get("tradesTable") or {}).get("rows") or [])
         points: list[tuple[datetime, float]] = []
-        for timestamp, close in zip(timestamps, close_values, strict=False):
-            if close is None:
+        for row in rows:
+            date_value = row.get("date")
+            close_value = row.get("close")
+            if not date_value or not close_value:
                 continue
-            points.append((datetime.fromtimestamp(timestamp), float(close)))
+            try:
+                date = datetime.strptime(str(date_value), "%m/%d/%Y")
+                close = _parse_price(str(close_value))
+            except ValueError:
+                continue
+            if date >= cutoff:
+                points.append((date, close))
+        return sorted(points, key=lambda item: item[0])
+
+    def _parse_stooq_points(self, csv_text: str, period: str) -> list[tuple[datetime, float]]:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_period_days(period))
+        points: list[tuple[datetime, float]] = []
+        for row in csv.DictReader(StringIO(csv_text)):
+            date_value = row.get("Date")
+            close_value = row.get("Close")
+            if not date_value or not close_value or close_value.upper() == "N/D":
+                continue
+            try:
+                date = datetime.strptime(date_value, "%Y-%m-%d")
+                close = float(close_value)
+            except ValueError:
+                continue
+            if date >= cutoff:
+                points.append((date, close))
         return points
 
     def _fetch_stooq_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
         import requests
 
-        stooq_symbols = _stooq_symbols(requested_symbol)
+        stooq_symbols = _stooq_symbols(
+            requested_symbol,
+            include_api_key_symbols=bool(self.settings.stooq_api_key),
+        )
         if not stooq_symbols:
             raise RuntimeError("Stooq fallback does not support this symbol.")
 
@@ -200,23 +314,6 @@ class PriceChartTool:
             except Exception as exc:
                 errors.append(f"{stooq_symbol}: {exc}")
         raise RuntimeError("; ".join(errors) or "Stooq response did not include close prices.")
-
-    def _parse_stooq_points(self, csv_text: str, period: str) -> list[tuple[datetime, float]]:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_period_days(period))
-        points: list[tuple[datetime, float]] = []
-        for row in csv.DictReader(StringIO(csv_text)):
-            date_value = row.get("Date")
-            close_value = row.get("Close")
-            if not date_value or not close_value or close_value.upper() == "N/D":
-                continue
-            try:
-                date = datetime.strptime(date_value, "%Y-%m-%d")
-                close = float(close_value)
-            except ValueError:
-                continue
-            if date >= cutoff:
-                points.append((date, close))
-        return points
 
     def _render_chart(self, requested_symbol: str, period: str, points: list[tuple[datetime, float]]) -> bytes:
         import matplotlib
@@ -316,6 +413,28 @@ def _retry_after_seconds(value: str | None) -> float:
         return 0.75
 
 
+def _points_from_timestamps_and_closes(timestamps: list[Any], close_values: list[Any]) -> list[tuple[datetime, float]]:
+    points: list[tuple[datetime, float]] = []
+    for timestamp, close in zip(timestamps, close_values, strict=False):
+        if timestamp is None or close is None:
+            continue
+        try:
+            points.append((datetime.fromtimestamp(float(timestamp)), float(close)))
+        except (TypeError, ValueError, OSError):
+            continue
+    return points
+
+
+def _yahoo_spark_symbols(normalized_symbol: str) -> list[str]:
+    proxy_symbols = {
+        "^GSPC": ["SPY"],
+        "^IXIC": ["QQQ"],
+        "^DJI": ["DIA"],
+        "^RUT": ["IWM"],
+    }
+    return [normalized_symbol, *proxy_symbols.get(normalized_symbol, [])]
+
+
 def _period_days(period: str) -> int:
     return {
         "7d": 14,
@@ -332,18 +451,48 @@ def _stooq_date_range(period: str) -> tuple[str, str]:
     return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
 
 
-def _stooq_symbols(requested_symbol: str) -> list[str]:
+def _nasdaq_date_range(period: str) -> tuple[str, str]:
+    end = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = end - timedelta(days=_period_days(period))
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def _parse_price(value: str) -> float:
+    clean = value.replace("$", "").replace(",", "").strip()
+    return float(clean)
+
+
+def _nasdaq_symbol(requested_symbol: str) -> tuple[str, str] | None:
+    normalized = normalize_symbol(requested_symbol)
+    symbols = {
+        "^GSPC": ("SPY", "etf"),
+        "^IXIC": ("QQQ", "etf"),
+        "^DJI": ("DIA", "etf"),
+        "^RUT": ("IWM", "etf"),
+        "AMD": ("AMD", "stocks"),
+        "NVDA": ("NVDA", "stocks"),
+        "AAPL": ("AAPL", "stocks"),
+        "TSLA": ("TSLA", "stocks"),
+        "MSFT": ("MSFT", "stocks"),
+    }
+    return symbols.get(normalized)
+
+
+def _stooq_symbols(requested_symbol: str, include_api_key_symbols: bool = False) -> list[str]:
     normalized = normalize_symbol(requested_symbol)
     stooq_symbols = {
         "GC=F": ["xauusd", "gc.c"],
         "SI=F": ["xagusd", "si.c"],
+        "BZ=F": ["brn.c", "bz.f"],
+        "CL=F": ["cl.f"],
         "BTC-USD": ["btcusd"],
         "ETH-USD": ["ethusd"],
         "USDTRY=X": ["usdtry"],
         "EURTRY=X": ["eurtry"],
-        "^GSPC": ["^spx"],
-        "^IXIC": ["^ndq"],
-        "^DJI": ["^dji"],
+        "^GSPC": ["spy.us"],
+        "^IXIC": ["qqq.us"],
+        "^DJI": ["dia.us"],
+        "^RUT": ["iwm.us"],
         "^GDAXI": ["dax"],
         "AMD": ["amd.us"],
         "NVDA": ["nvda.us"],
@@ -351,7 +500,15 @@ def _stooq_symbols(requested_symbol: str) -> list[str]:
         "TSLA": ["tsla.us"],
         "MSFT": ["msft.us"],
     }
-    return stooq_symbols.get(normalized, [])
+    symbols = list(stooq_symbols.get(normalized, []))
+    if include_api_key_symbols:
+        api_key_symbols = {
+            "^GSPC": ["^spx"],
+            "^IXIC": ["^ndq"],
+            "^DJI": ["^dji"],
+        }
+        symbols = [*api_key_symbols.get(normalized, []), *symbols]
+    return symbols
 
 
 def _stooq_requires_api_key(text: str) -> bool:

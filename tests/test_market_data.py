@@ -746,6 +746,105 @@ def test_price_chart_falls_back_to_stooq_when_yahoo_is_rate_limited(monkeypatch)
     assert any("stooq.com" in call for call in calls)
 
 
+def test_price_chart_uses_yahoo_spark_when_chart_endpoint_is_rate_limited(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if "/v8/finance/chart/" in url:
+            return _FakeHttpResponse(429)
+        if "/v8/finance/spark" in url:
+            return _FakeHttpResponse(
+                200,
+                data={
+                    "^GSPC": {
+                        "timestamp": [1777600000, 1777686400],
+                        "close": [5100.0, 5125.5],
+                    }
+                },
+            )
+        return _FakeHttpResponse(500)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings())
+    points = tool._fetch_history("SP500", "1y")
+
+    assert len(points) == 2
+    assert points[-1][1] == 5125.5
+    assert any("/v8/finance/chart/" in call for call in calls)
+    assert any("/v8/finance/spark" in call for call in calls)
+    assert not any("stooq.com" in call for call in calls)
+
+
+def test_price_chart_uses_yahoo_spark_etf_proxy_when_index_is_rate_limited(monkeypatch) -> None:
+    requested_symbols: list[str] = []
+
+    def fake_get(url, **kwargs):
+        if "/v8/finance/chart/" in url:
+            return _FakeHttpResponse(429)
+        if "/v8/finance/spark" in url:
+            symbol = kwargs["params"]["symbols"]
+            requested_symbols.append(symbol)
+            if symbol == "^GSPC":
+                return _FakeHttpResponse(429)
+            return _FakeHttpResponse(
+                200,
+                data={
+                    "SPY": {
+                        "timestamp": [1777600000, 1777686400],
+                        "close": [500.0, 505.25],
+                    }
+                },
+            )
+        return _FakeHttpResponse(500)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings())
+    points = tool._fetch_history("SP500", "1y")
+
+    assert points[-1][1] == 505.25
+    assert requested_symbols == ["^GSPC", "^GSPC", "SPY"]
+
+
+def test_price_chart_uses_nasdaq_fallback_when_yahoo_is_rate_limited(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if "finance.yahoo.com" in url:
+            return _FakeHttpResponse(429)
+        if "api.nasdaq.com" in url:
+            assert kwargs["params"]["assetclass"] == "etf"
+            return _FakeHttpResponse(
+                200,
+                data={
+                    "data": {
+                        "tradesTable": {
+                            "rows": [
+                                {"date": "05/02/2026", "close": "$511.25"},
+                                {"date": "05/01/2026", "close": "$505.00"},
+                            ]
+                        }
+                    }
+                },
+            )
+        return _FakeHttpResponse(500)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings())
+    points = tool._fetch_history("SP500", "1y")
+
+    assert [point[1] for point in points] == [505.0, 511.25]
+    assert any("api.nasdaq.com/api/quote/SPY/historical" in call for call in calls)
+    assert not any("stooq.com" in call for call in calls)
+
+
 def test_price_chart_tries_multiple_stooq_symbols_for_gold(monkeypatch) -> None:
     stooq_symbols: list[str] = []
 
@@ -781,6 +880,8 @@ def test_price_chart_sends_stooq_api_key_when_configured(monkeypatch) -> None:
     def fake_get(url, **kwargs):
         if "finance.yahoo.com" in url:
             return _FakeHttpResponse(429)
+        if "api.nasdaq.com" in url:
+            return _FakeHttpResponse(500)
         stooq_params.append(kwargs["params"])
         return _FakeHttpResponse(
             200,
@@ -799,6 +900,64 @@ def test_price_chart_sends_stooq_api_key_when_configured(monkeypatch) -> None:
 
     assert points[-1][1] == 111
     assert stooq_params[0]["s"] == "amd.us"
+    assert stooq_params[0]["apikey"] == "stooq_test_key"
+
+
+def test_price_chart_uses_free_stooq_etf_proxy_for_sp500_without_api_key(monkeypatch) -> None:
+    stooq_params: list[dict] = []
+
+    def fake_get(url, **kwargs):
+        if "finance.yahoo.com" in url:
+            return _FakeHttpResponse(429)
+        if "api.nasdaq.com" in url:
+            return _FakeHttpResponse(500)
+        stooq_params.append(kwargs["params"])
+        return _FakeHttpResponse(
+            200,
+            text=(
+                "Date,Open,High,Low,Close,Volume\n"
+                "2026-05-01,500,510,499,505,0\n"
+                "2026-05-02,505,512,501,511,0\n"
+            ),
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings())
+    points = tool._fetch_history("SP500", "1y")
+
+    assert points[-1][1] == 511
+    assert stooq_params[0]["s"] == "spy.us"
+    assert "apikey" not in stooq_params[0]
+
+
+def test_price_chart_prefers_stooq_index_symbol_when_api_key_configured(monkeypatch) -> None:
+    stooq_params: list[dict] = []
+
+    def fake_get(url, **kwargs):
+        if "finance.yahoo.com" in url:
+            return _FakeHttpResponse(429)
+        if "api.nasdaq.com" in url:
+            return _FakeHttpResponse(500)
+        stooq_params.append(kwargs["params"])
+        return _FakeHttpResponse(
+            200,
+            text=(
+                "Date,Open,High,Low,Close,Volume\n"
+                "2026-05-01,5000,5100,4990,5050,0\n"
+                "2026-05-02,5050,5120,5010,5110,0\n"
+            ),
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings(stooq_api_key="stooq_test_key"))
+    points = tool._fetch_history("SP500", "1y")
+
+    assert points[-1][1] == 5110
+    assert stooq_params[0]["s"] == "^spx"
     assert stooq_params[0]["apikey"] == "stooq_test_key"
 
 
