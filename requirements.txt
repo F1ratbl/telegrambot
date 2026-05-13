@@ -5,3 +5,4 @@ requests>=2.32,<3
 python-dotenv>=1.0,<2
 gunicorn>=22,<24
 pytest>=8.0,<9
+matplotlib>=3.8,<4

@@ -17,8 +17,10 @@ from src.bot.telegram import TelegramClient
 from src.bot.webhook import create_telegram_blueprint
 from src.config import Settings
 from src.tools.knowledge_base import KnowledgeBaseTool
+from src.tools.charting import PriceChartTool
 from src.tools.market_data import MarketDataClient
 from src.tools.news import NewsSearchClient
+from src.tools.visual_generation import EconomyVisualGenerator
 
 
 load_dotenv()
@@ -40,6 +42,8 @@ def create_app() -> Flask:
     news_search = NewsSearchClient(settings)
     speech_to_text = SpeechToTextClient(settings)
     text_to_speech = TextToSpeechClient(settings)
+    price_chart = PriceChartTool(settings)
+    visual_generator = EconomyVisualGenerator(settings)
     agent = EconomyAgent(
         settings=settings,
         market_data=market_data,
@@ -57,6 +61,8 @@ def create_app() -> Flask:
             telegram=telegram,
             speech_to_text=speech_to_text,
             text_to_speech=text_to_speech,
+            price_chart=price_chart,
+            visual_generator=visual_generator,
         )
     )
 
@@ -71,6 +77,7 @@ def create_app() -> Flask:
                 "qdrant_configured": settings.qdrant_enabled,
                 "telegram_configured": settings.telegram_enabled,
                 "voice_configured": settings.voice_enabled,
+                "image_generation_configured": settings.image_enabled,
             },
             200,
         )

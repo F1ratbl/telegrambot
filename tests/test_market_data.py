@@ -77,6 +77,7 @@ class _FakeTelegram:
     def __init__(self) -> None:
         self.messages: list[dict] = []
         self.voices: list[dict] = []
+        self.photos: list[dict] = []
         self.downloaded_file_ids: list[str] = []
 
     def send_message(self, chat_id, text, reply_to_message_id=None) -> None:
@@ -93,6 +94,16 @@ class _FakeTelegram:
             {
                 "chat_id": chat_id,
                 "audio": audio,
+                "reply_to_message_id": reply_to_message_id,
+                "caption": caption,
+            }
+        )
+
+    def send_photo(self, chat_id, image, reply_to_message_id=None, caption=None) -> None:
+        self.photos.append(
+            {
+                "chat_id": chat_id,
+                "image": image,
                 "reply_to_message_id": reply_to_message_id,
                 "caption": caption,
             }
@@ -118,6 +129,22 @@ class _FakeTTS:
     def synthesize(self, text: str) -> bytes:
         assert text == "cevap: altin kac tl"
         return b"mp3-bytes"
+
+
+class _FakeChartTool:
+    def parse_request(self, text: str):
+        return {"symbol": "GOLD"} if "grafik" in text.lower() else None
+
+    def create_price_chart(self, request):
+        return b"chart-bytes", "Altin grafigi"
+
+
+class _FakeVisualGenerator:
+    def parse_request(self, text: str):
+        return text if "infografik" in text.lower() else None
+
+    def generate(self, request_text: str):
+        return b"visual-bytes", "Ekonomi gorseli"
 
 
 class _FailingTTS:
@@ -250,6 +277,50 @@ def test_webhook_voice_message_returns_voice_reply() -> None:
     assert telegram.messages == []
 
 
+def test_webhook_chart_request_returns_photo_without_agent() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 9,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "altin son 1 ay grafik çiz",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        price_chart=_FakeChartTool(),  # type: ignore[arg-type]
+    )
+    assert handled is True
+    assert agent.messages == []
+    assert telegram.photos[0]["image"] == b"chart-bytes"
+    assert telegram.photos[0]["caption"] == "Altin grafigi"
+
+
+def test_webhook_visual_request_returns_photo_without_agent() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 10,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "bedelli sermaye artırımı infografik oluştur",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        visual_generator=_FakeVisualGenerator(),  # type: ignore[arg-type]
+    )
+    assert handled is True
+    assert agent.messages == []
+    assert telegram.photos[0]["image"] == b"visual-bytes"
+    assert telegram.photos[0]["caption"] == "Ekonomi gorseli"
+
+
 def test_webhook_voice_message_falls_back_to_text_when_tts_fails() -> None:
     agent = _FakeAgent()
     telegram = _FakeTelegram()
@@ -315,6 +386,14 @@ def test_telegram_sends_opus_tts_as_voice_note() -> None:
     client.send_voice(chat_id=123, audio=b"opus")
     assert client.uploads[0]["method"] == "sendVoice"
     assert "voice" in client.uploads[0]["files"]
+
+
+def test_telegram_sends_photo() -> None:
+    client = _RecordingTelegramClient(Settings(telegram_bot_token="token"))
+    client.send_photo(chat_id=123, image=b"png", caption="Grafik")
+    assert client.uploads[0]["method"] == "sendPhoto"
+    assert client.uploads[0]["payload"]["caption"] == "Grafik"
+    assert "photo" in client.uploads[0]["files"]
 
 
 def test_memory_stores_name_only_when_explicitly_provided() -> None:

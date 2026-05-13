@@ -55,6 +55,13 @@ def _optional_float(env: Mapping[str, str], name: str) -> float | None:
         return None
 
 
+def _bool(env: Mapping[str, str], name: str, default: bool) -> bool:
+    value = _optional(env.get(name))
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _csv(env: Mapping[str, str], name: str, default: list[str]) -> list[str]:
     raw_value = _optional(env.get(name))
     if raw_value is None:
@@ -85,6 +92,8 @@ class Settings:
     gemini_thinking_level: str | None = None
     gemini_retry_attempts: int = 3
     gemini_retry_base_delay_seconds: float = 1.5
+    gemini_image_model: str = "gemini-2.5-flash-image"
+    image_generation_enabled: bool = True
 
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
@@ -125,6 +134,8 @@ class Settings:
             gemini_thinking_level=_optional(env.get("GEMINI_THINKING_LEVEL")),
             gemini_retry_attempts=_int(env, "GEMINI_RETRY_ATTEMPTS", 3),
             gemini_retry_base_delay_seconds=_float(env, "GEMINI_RETRY_BASE_DELAY_SECONDS", 1.5),
+            gemini_image_model=_optional(env.get("GEMINI_IMAGE_MODEL")) or "gemini-2.5-flash-image",
+            image_generation_enabled=_bool(env, "IMAGE_GENERATION_ENABLED", True),
             embedding_model=_optional(env.get("EMBEDDING_MODEL")) or "gemini-embedding-001",
             embedding_dimensions=_int(env, "EMBEDDING_DIMENSIONS", 768),
             qdrant_url=_optional(env.get("QDRANT_URL")),
@@ -156,3 +167,7 @@ class Settings:
     @property
     def voice_enabled(self) -> bool:
         return bool(self.deepgram_api_key and self.elevenlabs_api_key and self.elevenlabs_voice_id)
+
+    @property
+    def image_enabled(self) -> bool:
+        return bool(self.google_api_key and self.image_generation_enabled)

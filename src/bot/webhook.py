@@ -9,6 +9,8 @@ from src.ai.agent import EconomyAgent
 from src.audio.speech import SpeechServiceError, SpeechToTextClient, TextToSpeechClient
 from src.bot.telegram import TelegramClient
 from src.config import Settings
+from src.tools.charting import PriceChartTool
+from src.tools.visual_generation import EconomyVisualGenerator
 
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,8 @@ def create_telegram_blueprint(
     telegram: TelegramClient,
     speech_to_text: SpeechToTextClient | None = None,
     text_to_speech: TextToSpeechClient | None = None,
+    price_chart: PriceChartTool | None = None,
+    visual_generator: EconomyVisualGenerator | None = None,
 ) -> Blueprint:
     blueprint = Blueprint("telegram", __name__)
 
@@ -46,7 +50,15 @@ def create_telegram_blueprint(
 
         update = request.get_json(silent=True) or {}
         try:
-            handled = _handle_update(update, agent, telegram, speech_to_text, text_to_speech)
+            handled = _handle_update(
+                update,
+                agent,
+                telegram,
+                speech_to_text,
+                text_to_speech,
+                price_chart or PriceChartTool(settings),
+                visual_generator or EconomyVisualGenerator(settings),
+            )
         except Exception:
             logger.exception("Failed to process Telegram update.")
             return jsonify({"ok": True, "handled": False}), 200
@@ -61,6 +73,8 @@ def _handle_update(
     telegram: TelegramClient,
     speech_to_text: SpeechToTextClient | None = None,
     text_to_speech: TextToSpeechClient | None = None,
+    price_chart: PriceChartTool | None = None,
+    visual_generator: EconomyVisualGenerator | None = None,
 ) -> bool:
     message = update.get("message") or update.get("edited_message")
     if not isinstance(message, dict):
@@ -86,6 +100,12 @@ def _handle_update(
     if not isinstance(text, str) or not text.strip():
         return False
 
+    if price_chart and _handle_price_chart_request(text, message, chat_id, telegram, price_chart):
+        return True
+
+    if visual_generator and _handle_visual_request(text, message, chat_id, telegram, visual_generator):
+        return True
+
     reply = agent.reply(
         user_message=text,
         chat_id=_memory_chat_id(message, chat_id),
@@ -95,6 +115,62 @@ def _handle_update(
         text=reply,
         reply_to_message_id=message.get("message_id"),
     )
+    return True
+
+
+def _handle_price_chart_request(
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+    telegram: TelegramClient,
+    price_chart: PriceChartTool,
+) -> bool:
+    chart_request = price_chart.parse_request(text)
+    if chart_request is None:
+        return False
+    try:
+        image, caption = price_chart.create_price_chart(chart_request)
+        telegram.send_photo(
+            chat_id=chat_id,
+            image=image,
+            caption=caption,
+            reply_to_message_id=message.get("message_id"),
+        )
+    except Exception:
+        logger.exception("Failed to create or send price chart.")
+        telegram.send_message(
+            chat_id=chat_id,
+            text="Grafiği şu an oluşturamadım. Veri sağlayıcıya erişim veya grafik üretimi tarafında sorun olabilir.",
+            reply_to_message_id=message.get("message_id"),
+        )
+    return True
+
+
+def _handle_visual_request(
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+    telegram: TelegramClient,
+    visual_generator: EconomyVisualGenerator,
+) -> bool:
+    visual_request = visual_generator.parse_request(text)
+    if visual_request is None:
+        return False
+    try:
+        image, caption = visual_generator.generate(visual_request)
+        telegram.send_photo(
+            chat_id=chat_id,
+            image=image,
+            caption=caption,
+            reply_to_message_id=message.get("message_id"),
+        )
+    except Exception:
+        logger.exception("Failed to generate or send economy visual.")
+        telegram.send_message(
+            chat_id=chat_id,
+            text="Görseli şu an oluşturamadım. Gemini görsel modeli, API anahtarı veya kota tarafını kontrol etmek gerekiyor.",
+            reply_to_message_id=message.get("message_id"),
+        )
     return True
 
 

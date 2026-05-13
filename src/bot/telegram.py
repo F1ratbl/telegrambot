@@ -69,6 +69,33 @@ class TelegramClient:
         voice_file.name = filename
         self._post_file(method, payload, {field_name: (filename, voice_file, mimetype)})
 
+    def send_photo(
+        self,
+        chat_id: int | str,
+        image: bytes,
+        reply_to_message_id: int | None = None,
+        caption: str | None = None,
+    ) -> None:
+        if not self.settings.telegram_bot_token:
+            logger.warning("TELEGRAM_BOT_TOKEN is not configured; skipping Telegram photo send.")
+            return
+        if not image:
+            raise RuntimeError("Photo image is empty.")
+
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "parse_mode": "HTML",
+        }
+        if caption:
+            payload["caption"] = _sanitize_telegram_text(caption)[:1024]
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+            payload["allow_sending_without_reply"] = True
+
+        photo_file = BytesIO(image)
+        photo_file.name = "chart.png"
+        self._post_file("sendPhoto", payload, {"photo": ("chart.png", photo_file, "image/png")})
+
     def download_file(self, file_id: str) -> bytes:
         if not self.settings.telegram_bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured.")
