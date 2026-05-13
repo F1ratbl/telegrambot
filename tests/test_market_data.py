@@ -141,40 +141,6 @@ class _RecordingImageClient:
         self.models = _RecordingImageModels()
 
 
-class _PaidImagenThenTextModels:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-
-    def generate_images(self, model, prompt, config):
-        self.calls.append({"method": "generate_images", "model": model, "prompt": prompt, "config": config})
-        raise RuntimeError(
-            "400 INVALID_ARGUMENT. Imagen 3 is only available on paid plans. "
-            "Please upgrade your account at https://ai.dev/projects."
-        )
-
-    def generate_content(self, model, contents, config):
-        self.calls.append({"method": "generate_content", "model": model, "contents": contents, "config": config})
-        return _FakeGeminiResponse(
-            """
-            {
-              "title": "Bedelli sermaye artırımı",
-              "subtitle": "Nakit girişi ve ortaklık etkisini ayır",
-              "steps": [
-                {"label": "Nakit", "body": "Şirket yeni payla kasaya kaynak koymayı hedefler."},
-                {"label": "Sulanma", "body": "Katılmayan ortağın pay oranı azalabilir."},
-                {"label": "Kullanım", "body": "Fonun borç, yatırım veya işletme sermayesine gidişi izlenir."}
-              ],
-              "footer": "Yatırım tavsiyesi değildir; kullanım amacı ve riskler birlikte okunmalıdır."
-            }
-            """
-        )
-
-
-class _PaidImagenThenTextClient:
-    def __init__(self) -> None:
-        self.models = _PaidImagenThenTextModels()
-
-
 class _FakeAgent:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -497,45 +463,6 @@ def test_visual_generator_uses_gemini_flash_image_generate_content() -> None:
     assert client.models.calls[0]["method"] == "generate_content"
     assert client.models.calls[0]["model"] == "gemini-2.5-flash-image"
     assert "hisse bölünmesini" in client.models.calls[0]["contents"][0]
-
-
-def test_visual_generator_uses_gemini_text_plan_when_imagen_paid_tier_fails() -> None:
-    client = _PaidImagenThenTextClient()
-    generator = EconomyVisualGenerator(
-        Settings(
-            google_api_key="test",
-            gemini_model="gemini-2.5-flash",
-            gemini_image_model="imagen-4.0-generate-001",
-        )
-    )
-    generator._client = client
-
-    image, caption = generator.generate("bedelli sermaye artırımı infografik oluştur")
-
-    assert caption == "Ekonomi semasi"
-    assert image.startswith(b"\x89PNG")
-    assert client.models.calls[0]["method"] == "generate_images"
-    assert client.models.calls[1]["method"] == "generate_content"
-    assert client.models.calls[1]["model"] == "gemini-2.5-flash"
-
-
-def test_visual_generator_can_skip_paid_image_api_with_text_guided_mode() -> None:
-    client = _PaidImagenThenTextClient()
-    generator = EconomyVisualGenerator(
-        Settings(
-            google_api_key="test",
-            gemini_model="gemini-2.5-flash",
-            gemini_image_model="gemini-text-infographic",
-        )
-    )
-    generator._client = client
-
-    image, caption = generator.generate("bedelli sermaye artırımı infografik oluştur")
-
-    assert caption == "Ekonomi semasi"
-    assert image.startswith(b"\x89PNG")
-    assert [call["method"] for call in client.models.calls] == ["generate_content"]
-    assert client.models.calls[0]["model"] == "gemini-2.5-flash"
 
 
 def test_visual_generator_ignores_huggingface_when_disabled(monkeypatch) -> None:

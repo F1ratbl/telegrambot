@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 from io import BytesIO
-import json
 import logging
 import re
 from typing import Any
@@ -22,7 +21,6 @@ class EconomyVisualGenerator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._client = None
-        self._native_google_image_unavailable = False
 
     def parse_request(self, text: str) -> str | None:
         lowered = text.lower()
@@ -60,25 +58,13 @@ class EconomyVisualGenerator:
         if self._client is None:
             self._client = genai.Client(api_key=self.settings.google_api_key)
 
-        if self._uses_text_guided_visual_mode():
-            image = self._generate_text_guided_infographic(request_text, types)
-            if image:
-                return image, "Ekonomi semasi"
-            return self._render_fallback_infographic(request_text), "Ekonomi semasi"
-
         try:
-            if not self._native_google_image_unavailable:
-                image = self._generate_with_google(prompt, types)
-                if image:
-                    return image, "Ekonomi gorseli"
-                logger.warning("Gemini image model returned no image; trying text-guided infographic.")
+            image = self._generate_with_google(prompt, types)
+            if image:
+                return image, "Ekonomi gorseli"
+            logger.warning("Gemini image model returned no image; using fallback infographic.")
         except Exception as exc:
-            if _looks_like_paid_tier_image_error(exc):
-                self._native_google_image_unavailable = True
-            logger.warning("Gemini image generation failed; trying text-guided infographic: %s", exc)
-        image = self._generate_text_guided_infographic(request_text, types)
-        if image:
-            return image, "Ekonomi semasi"
+            logger.warning("Gemini image generation failed; using fallback infographic: %s", exc)
         return self._render_fallback_infographic(request_text), "Ekonomi semasi"
 
     def _generate_with_google(self, prompt: str, types: Any) -> bytes | None:
@@ -101,38 +87,6 @@ class EconomyVisualGenerator:
             config=types.GenerateContentConfig(response_modalities=["Image"]),
         )
         return self._extract_image_bytes(response)
-
-    def _generate_text_guided_infographic(self, request_text: str, types: Any) -> bytes | None:
-        model = self.settings.gemini_visual_text_model.strip()
-        if not model:
-            return None
-
-        prompt = _build_visual_plan_prompt(request_text)
-        try:
-            response = self._client.models.generate_content(
-                model=model,
-                contents=[prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2,
-                    max_output_tokens=700,
-                ),
-            )
-        except TypeError:
-            response = self._client.models.generate_content(
-                model=model,
-                contents=[prompt],
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
-            )
-        except Exception as exc:
-            logger.warning("Gemini text visual planning failed; using static fallback infographic: %s", exc)
-            return None
-
-        spec = _parse_visual_plan(_extract_text(response), request_text)
-        if spec is None:
-            logger.warning("Gemini text visual planning returned invalid JSON; using static fallback infographic.")
-            return None
-        return self._render_fallback_infographic(request_text, spec)
 
     def _generate_with_huggingface(self, prompt: str) -> bytes | None:
         import requests
@@ -194,14 +148,6 @@ class EconomyVisualGenerator:
             f"Konu: {request_text}"
         )
 
-    def _uses_text_guided_visual_mode(self) -> bool:
-        model = self.settings.gemini_image_model.strip().lower()
-        return model in {
-            "gemini-text-infographic",
-            "text-guided-infographic",
-            "local-gemini-infographic",
-        }
-
     def _extract_image_bytes(self, response: Any) -> bytes | None:
         generated_images = getattr(response, "generated_images", None) or []
         for generated_image in generated_images:
@@ -222,7 +168,7 @@ class EconomyVisualGenerator:
                 return image
         return None
 
-    def _render_fallback_infographic(self, request_text: str, spec: dict[str, Any] | None = None) -> bytes:
+    def _render_fallback_infographic(self, request_text: str) -> bytes:
         import matplotlib
 
         matplotlib.use("Agg")
@@ -230,22 +176,8 @@ class EconomyVisualGenerator:
         from matplotlib.patches import FancyBboxPatch
 
         topic = _clean_topic(request_text)
-        title = _shorten(str(spec.get("title") if spec else topic), 58)
-        subtitle = _shorten(
-            str(spec.get("subtitle") if spec else "Ekonomi yorumu icin hizli okuma semasi"),
-            82,
-        )
-        footer = _shorten(
-            str(
-                spec.get("footer")
-                if spec
-                else "Kesin yatirim tavsiyesi degildir; karar icin veri, haber kaynagi ve riskler birlikte okunmalidir."
-            ),
-            125,
-        )
-        steps = spec.get("steps") if spec else None
-        if not isinstance(steps, list) or len(steps) != 3:
-            steps = _fallback_steps(topic)
+        title = _shorten(topic, 58)
+        steps = _fallback_steps(topic)
 
         fig, ax = plt.subplots(figsize=(9, 6), dpi=160)
         fig.patch.set_facecolor("#f8fafc")
@@ -266,7 +198,7 @@ class EconomyVisualGenerator:
         ax.text(
             0.5,
             0.855,
-            subtitle,
+            "Ekonomi yorumu icin hizli okuma semasi",
             ha="center",
             va="center",
             fontsize=10.5,
@@ -276,12 +208,7 @@ class EconomyVisualGenerator:
         y_positions = [0.68, 0.50, 0.32]
         colors = ["#dbeafe", "#dcfce7", "#fee2e2"]
         border_colors = ["#2563eb", "#16a34a", "#dc2626"]
-        for index, step in enumerate(steps[:3]):
-            if isinstance(step, dict):
-                label = str(step.get("label") or f"Adim {index + 1}")
-                body = str(step.get("body") or "")
-            else:
-                label, body = step
+        for index, (label, body) in enumerate(steps):
             x = 0.12
             y = y_positions[index]
             width = 0.76
@@ -327,7 +254,7 @@ class EconomyVisualGenerator:
         ax.text(
             0.5,
             0.12,
-            footer,
+            "Kesin yatirim tavsiyesi degildir; karar icin veri, haber kaynagi ve riskler birlikte okunmalidir.",
             ha="center",
             va="center",
             fontsize=9.5,
@@ -339,128 +266,6 @@ class EconomyVisualGenerator:
         fig.savefig(output, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
         plt.close(fig)
         return output.getvalue()
-
-
-def _build_visual_plan_prompt(request_text: str) -> str:
-    return (
-        "You are planning a Turkish finance education infographic that will be rendered as PNG by code. "
-        "Return only valid JSON, no markdown. Do not invent prices, percentages, company facts, dates, "
-        "logos, flags, or investment advice. Use short Turkish text that fits inside infographic boxes. "
-        "Schema: {\"title\": string, \"subtitle\": string, \"steps\": [{\"label\": string, "
-        "\"body\": string}, {\"label\": string, \"body\": string}, {\"label\": string, "
-        "\"body\": string}], \"footer\": string}. "
-        "Constraints: title max 48 chars, subtitle max 72 chars, each label max 18 chars, "
-        "each body max 82 chars, footer max 120 chars. "
-        f"Topic/request: {request_text}"
-    )
-
-
-def _parse_visual_plan(text: str | None, request_text: str) -> dict[str, Any] | None:
-    if not text:
-        return None
-    cleaned = _strip_json_fence(text)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(data, dict):
-        return None
-
-    title = _clean_plan_text(data.get("title"), _clean_topic(request_text), 58)
-    subtitle = _clean_plan_text(data.get("subtitle"), "Ekonomi yorumu icin hizli okuma semasi", 82)
-    footer = _clean_plan_text(
-        data.get("footer"),
-        "Kesin yatirim tavsiyesi degildir; karar icin veri ve riskler birlikte okunmalidir.",
-        125,
-    )
-    steps = _coerce_plan_steps(data.get("steps") or data.get("blocks") or data.get("items"))
-    if steps is None:
-        return None
-    return {
-        "title": title,
-        "subtitle": subtitle,
-        "steps": steps,
-        "footer": footer,
-    }
-
-
-def _strip_json_fence(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
-        stripped = re.sub(r"\s*```$", "", stripped)
-    return stripped.strip()
-
-
-def _clean_plan_text(value: Any, default: str, limit: int) -> str:
-    if value is None:
-        return _shorten(default, limit)
-    text = re.sub(r"\s+", " ", str(value)).strip(" \t\r\n\"'")
-    if not text:
-        text = default
-    return _shorten(text, limit)
-
-
-def _coerce_plan_steps(value: Any) -> list[dict[str, str]] | None:
-    if not isinstance(value, list) or len(value) < 3:
-        return None
-
-    steps: list[dict[str, str]] = []
-    for index, item in enumerate(value[:3]):
-        if isinstance(item, dict):
-            label = _clean_plan_text(item.get("label") or item.get("title"), f"Adim {index + 1}", 20)
-            body = _clean_plan_text(item.get("body") or item.get("text") or item.get("description"), "", 88)
-        elif isinstance(item, (list, tuple)) and len(item) >= 2:
-            label = _clean_plan_text(item[0], f"Adim {index + 1}", 20)
-            body = _clean_plan_text(item[1], "", 88)
-        else:
-            return None
-        if not body:
-            return None
-        steps.append({"label": label, "body": body})
-    return steps
-
-
-def _extract_text(response: Any) -> str | None:
-    text = getattr(response, "text", None)
-    if isinstance(text, str) and text.strip():
-        return text
-
-    chunks: list[str] = []
-    _append_text_parts(chunks, getattr(response, "parts", None) or [])
-    candidates = getattr(response, "candidates", None) or []
-    for candidate in candidates:
-        content = getattr(candidate, "content", None)
-        _append_text_parts(chunks, getattr(content, "parts", None) or [])
-    joined = "\n".join(chunk for chunk in chunks if chunk)
-    return joined or None
-
-
-def _append_text_parts(chunks: list[str], parts: list[Any]) -> None:
-    for part in parts:
-        text = getattr(part, "text", None)
-        if isinstance(text, str) and text.strip():
-            chunks.append(text)
-
-
-def _looks_like_paid_tier_image_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(
-        marker in message
-        for marker in [
-            "only available on paid",
-            "free tier",
-            "not available",
-            "billing",
-            "upgrade your account",
-        ]
-    )
 
 
 def _clean_topic(text: str) -> str:
