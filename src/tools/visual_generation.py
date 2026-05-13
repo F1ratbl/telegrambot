@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class EconomyVisualGenerator:
-    huggingface_text_to_image_url = "https://api-inference.huggingface.co/models/{model}"
+    huggingface_text_to_image_urls = (
+        "https://router.huggingface.co/hf-inference/models/{model}",
+        "https://api-inference.huggingface.co/models/{model}",
+    )
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -80,7 +83,6 @@ class EconomyVisualGenerator:
         if not model:
             return None
 
-        url = self.huggingface_text_to_image_url.format(model=model)
         headers = {
             "Authorization": f"Bearer {self.settings.huggingface_api_key}",
             "Accept": "image/png,image/jpeg,application/json",
@@ -100,26 +102,29 @@ class EconomyVisualGenerator:
             },
             "options": {"wait_for_model": True},
         }
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=max(self.settings.request_timeout_seconds, 20),
-            )
-            content_type = response.headers.get("content-type", "")
-            if response.status_code >= 400:
-                logger.warning(
-                    "Hugging Face image generation failed with %s: %s",
-                    response.status_code,
-                    response.text[:500],
+        for url_template in self.huggingface_text_to_image_urls:
+            url = url_template.format(model=model)
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=max(self.settings.request_timeout_seconds, 20),
                 )
-                return None
-            if content_type.startswith("image/") and response.content:
-                return response.content
-            logger.warning("Hugging Face returned non-image response: %s", response.text[:500])
-        except Exception as exc:
-            logger.warning("Hugging Face image generation failed; trying next fallback: %s", exc)
+                content_type = response.headers.get("content-type", "")
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Hugging Face image generation failed with %s at %s: %s",
+                        response.status_code,
+                        url,
+                        response.text[:500],
+                    )
+                    continue
+                if content_type.startswith("image/") and response.content:
+                    return response.content
+                logger.warning("Hugging Face returned non-image response from %s: %s", url, response.text[:500])
+            except Exception as exc:
+                logger.warning("Hugging Face image generation failed at %s; trying next fallback: %s", url, exc)
         return None
 
     def _build_prompt(self, request_text: str) -> str:
