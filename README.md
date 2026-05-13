@@ -20,10 +20,17 @@ TELEGRAM_BOT_TOKEN=...
 TELEGRAM_WEBHOOK_SECRET=uzun-rastgele-bir-secret
 GOOGLE_API_KEY=...
 GEMINI_MODEL=gemini-2.5-flash
+REPLICATE_API_TOKEN=...
+REPLICATE_IMAGE_MODEL=black-forest-labs/flux-2-pro
+REPLICATE_IMAGE_ENABLED=true
 QDRANT_URL=https://...qdrant.tech
 QDRANT_API_KEY=...
 QDRANT_COLLECTION=economy_knowledge
 ```
+
+Gorsel uretimi icin Replicate etkinse bot once `REPLICATE_IMAGE_MODEL`
+modelini dener. Basarisiz olursa Hugging Face/Google ve en sonda yerel
+infografik fallback akisi devreye girer.
 
 ## Lokal Calistirma
 

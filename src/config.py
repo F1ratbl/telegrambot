@@ -94,6 +94,9 @@ class Settings:
     gemini_retry_base_delay_seconds: float = 1.5
     gemini_image_model: str = "gemini-2.5-flash-image"
     image_generation_enabled: bool = True
+    replicate_api_token: str | None = None
+    replicate_image_model: str = "black-forest-labs/flux-2-pro"
+    replicate_image_generation_enabled: bool = False
     huggingface_api_key: str | None = None
     huggingface_image_model: str = "black-forest-labs/FLUX.1-schnell"
     huggingface_image_generation_enabled: bool = False
@@ -140,6 +143,11 @@ class Settings:
             gemini_retry_base_delay_seconds=_float(env, "GEMINI_RETRY_BASE_DELAY_SECONDS", 1.5),
             gemini_image_model=_optional(env.get("GEMINI_IMAGE_MODEL")) or "gemini-2.5-flash-image",
             image_generation_enabled=_bool(env, "IMAGE_GENERATION_ENABLED", True),
+            replicate_api_token=_optional(env.get("REPLICATE_API_TOKEN")),
+            replicate_image_model=(
+                _optional(env.get("REPLICATE_IMAGE_MODEL")) or "black-forest-labs/flux-2-pro"
+            ),
+            replicate_image_generation_enabled=_bool(env, "REPLICATE_IMAGE_ENABLED", False),
             huggingface_api_key=(
                 _optional(env.get("HUGGINGFACE_API_KEY"))
                 or _optional(env.get("HUGGINGFACE_HUB_TOKEN"))
@@ -186,7 +194,19 @@ class Settings:
     def image_enabled(self) -> bool:
         return bool(
             self.image_generation_enabled
-            and (self.google_api_key or (self.huggingface_image_generation_enabled and self.huggingface_api_key))
+            and (
+                self.google_api_key
+                or (self.replicate_image_generation_enabled and self.replicate_api_token)
+                or (self.huggingface_image_generation_enabled and self.huggingface_api_key)
+            )
+        )
+
+    @property
+    def replicate_image_enabled(self) -> bool:
+        return bool(
+            self.image_generation_enabled
+            and self.replicate_image_generation_enabled
+            and self.replicate_api_token
         )
 
     @property

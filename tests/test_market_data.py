@@ -465,6 +465,120 @@ def test_visual_generator_uses_gemini_flash_image_generate_content() -> None:
     assert "hisse bölünmesini" in client.models.calls[0]["contents"][0]
 
 
+def test_visual_generator_uses_replicate_when_enabled(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"method": "post", "url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            data={
+                "status": "succeeded",
+                "output": "https://replicate.delivery/example/output.png",
+            },
+        )
+
+    def fake_get(url, **kwargs):
+        calls.append({"method": "get", "url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            content=b"replicate-image-bytes",
+            headers={"content-type": "image/png"},
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.get", fake_get)
+    generator = EconomyVisualGenerator(
+        Settings(
+            replicate_api_token="r8_test",
+            replicate_image_generation_enabled=True,
+        )
+    )
+
+    image, caption = generator.generate("hisse bölünmesini görselle anlat")
+
+    assert image == b"replicate-image-bytes"
+    assert caption == "Ekonomi gorseli"
+    assert calls[0]["url"] == "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer r8_test"
+    assert calls[0]["headers"]["Prefer"] == "wait=60"
+    assert calls[0]["json"]["input"]["aspect_ratio"] == "16:9"
+    assert calls[0]["json"]["input"]["output_format"] == "png"
+    assert calls[1]["url"] == "https://replicate.delivery/example/output.png"
+
+
+def test_visual_generator_polls_replicate_when_sync_response_is_processing(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"method": "post", "url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            data={
+                "status": "processing",
+                "urls": {"get": "https://api.replicate.com/v1/predictions/prediction-id"},
+            },
+        )
+
+    def fake_get(url, **kwargs):
+        calls.append({"method": "get", "url": url, **kwargs})
+        if url.startswith("https://api.replicate.com"):
+            return _FakeHttpResponse(
+                200,
+                data={
+                    "status": "succeeded",
+                    "output": ["https://replicate.delivery/example/polled.png"],
+                },
+            )
+        return _FakeHttpResponse(
+            200,
+            content=b"replicate-polled-image",
+            headers={"content-type": "image/png"},
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.get", fake_get)
+    generator = EconomyVisualGenerator(
+        Settings(
+            replicate_api_token="r8_test",
+            replicate_image_generation_enabled=True,
+        )
+    )
+
+    image, caption = generator.generate("ekonomi botu için modern görsel oluştur")
+
+    assert image == b"replicate-polled-image"
+    assert caption == "Ekonomi gorseli"
+    assert calls[1]["url"] == "https://api.replicate.com/v1/predictions/prediction-id"
+    assert calls[2]["url"] == "https://replicate.delivery/example/polled.png"
+
+
+def test_visual_generator_falls_back_to_google_when_replicate_fails(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return _FakeHttpResponse(401, text="invalid token")
+
+    monkeypatch.setattr("requests.post", fake_post)
+    client = _RecordingImageClient()
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            replicate_api_token="r8_bad",
+            replicate_image_generation_enabled=True,
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("hisse bölünmesini görselle anlat")
+
+    assert image == b"gemini-image-bytes"
+    assert caption == "Ekonomi gorseli"
+    assert calls[0]["url"] == "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions"
+    assert client.models.calls[0]["method"] == "generate_content"
+
+
 def test_visual_generator_ignores_huggingface_when_disabled(monkeypatch) -> None:
     calls: list[dict] = []
 

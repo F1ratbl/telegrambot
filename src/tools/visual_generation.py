@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class EconomyVisualGenerator:
+    replicate_api_base_url = "https://api.replicate.com/v1"
     huggingface_text_to_image_urls = (
         "https://router.huggingface.co/hf-inference/models/{model}",
         "https://api-inference.huggingface.co/models/{model}",
@@ -44,6 +45,11 @@ class EconomyVisualGenerator:
             return self._render_fallback_infographic(request_text), "Ekonomi semasi"
 
         prompt = self._build_prompt(request_text)
+        if self.settings.replicate_image_enabled:
+            image = self._generate_with_replicate(prompt)
+            if image:
+                return image, "Ekonomi gorseli"
+
         if self.settings.huggingface_image_enabled:
             image = self._generate_with_huggingface(prompt)
             if image:
@@ -87,6 +93,92 @@ class EconomyVisualGenerator:
             config=types.GenerateContentConfig(response_modalities=["Image"]),
         )
         return self._extract_image_bytes(response)
+
+    def _generate_with_replicate(self, prompt: str) -> bytes | None:
+        import requests
+
+        model = self.settings.replicate_image_model.strip()
+        token = self.settings.replicate_api_token
+        if not model or not token:
+            return None
+
+        owner, name = _split_replicate_model(model)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Prefer": "wait=60",
+            "Cancel-After": "90s",
+        }
+        payload = {
+            "input": {
+                "prompt": prompt,
+                "aspect_ratio": "16:9",
+                "resolution": "1 MP",
+                "output_format": "png",
+                "output_quality": 90,
+                "safety_tolerance": 2,
+            }
+        }
+        url = f"{self.replicate_api_base_url}/models/{owner}/{name}/predictions"
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=max(self.settings.request_timeout_seconds, 65),
+            )
+            if response.status_code >= 400:
+                logger.warning("Replicate image generation failed with %s: %s", response.status_code, response.text[:500])
+                return None
+            prediction = response.json()
+            image_url = _replicate_output_url(prediction.get("output"))
+            if image_url:
+                return self._download_replicate_image(image_url)
+
+            get_url = (prediction.get("urls") or {}).get("get")
+            if not get_url:
+                logger.warning("Replicate returned no output URL and no polling URL.")
+                return None
+            return self._poll_replicate_prediction(get_url, headers)
+        except Exception as exc:
+            logger.warning("Replicate image generation failed; trying next fallback: %s", exc)
+            return None
+
+    def _poll_replicate_prediction(self, get_url: str, headers: dict[str, str]) -> bytes | None:
+        import time
+        import requests
+
+        poll_headers = {"Authorization": headers["Authorization"]}
+        deadline = time.monotonic() + max(self.settings.request_timeout_seconds, 75)
+        while time.monotonic() < deadline:
+            response = requests.get(get_url, headers=poll_headers, timeout=max(self.settings.request_timeout_seconds, 20))
+            if response.status_code >= 400:
+                logger.warning("Replicate polling failed with %s: %s", response.status_code, response.text[:500])
+                return None
+            prediction = response.json()
+            image_url = _replicate_output_url(prediction.get("output"))
+            if image_url:
+                return self._download_replicate_image(image_url)
+            status = prediction.get("status")
+            if status in {"failed", "canceled"}:
+                logger.warning("Replicate prediction ended with status %s: %s", status, str(prediction.get("error"))[:500])
+                return None
+            time.sleep(2)
+        logger.warning("Replicate prediction did not finish before timeout.")
+        return None
+
+    def _download_replicate_image(self, image_url: str) -> bytes | None:
+        import requests
+
+        response = requests.get(image_url, timeout=max(self.settings.request_timeout_seconds, 30))
+        if response.status_code >= 400:
+            logger.warning("Replicate image download failed with %s: %s", response.status_code, response.text[:500])
+            return None
+        content_type = response.headers.get("content-type", "")
+        if not content_type.startswith("image/"):
+            logger.warning("Replicate output URL returned non-image content type %s.", content_type or "<empty>")
+            return None
+        return response.content or None
 
     def _generate_with_huggingface(self, prompt: str) -> bytes | None:
         import requests
@@ -277,6 +369,32 @@ def _clean_topic(text: str) -> str:
     )
     clean = re.sub(r"\s+", " ", clean).strip(" .,:;!?")
     return clean or "Ekonomi konusu"
+
+
+def _split_replicate_model(model: str) -> tuple[str, str]:
+    model = model.strip().strip("/")
+    if "/" not in model:
+        raise ValueError("REPLICATE_IMAGE_MODEL must be in owner/model format.")
+    owner, name = model.split("/", 1)
+    if not owner or not name or "/" in name:
+        raise ValueError("REPLICATE_IMAGE_MODEL must be in owner/model format.")
+    return owner, name
+
+
+def _replicate_output_url(output: Any) -> str | None:
+    if isinstance(output, str) and output.startswith(("http://", "https://")):
+        return output
+    if isinstance(output, list):
+        for item in output:
+            image_url = _replicate_output_url(item)
+            if image_url:
+                return image_url
+    if isinstance(output, dict):
+        for key in ("url", "image", "output"):
+            image_url = _replicate_output_url(output.get(key))
+            if image_url:
+                return image_url
+    return None
 
 
 def _extract_from_parts(parts: list[Any]) -> bytes | None:
