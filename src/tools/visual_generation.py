@@ -53,7 +53,6 @@ class EconomyVisualGenerator:
                     number_of_images=1,
                     aspect_ratio="16:9",
                     output_mime_type="image/png",
-                    enhance_prompt=True,
                 ),
             )
             image = self._extract_image_bytes(response)
