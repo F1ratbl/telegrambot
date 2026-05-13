@@ -96,6 +96,7 @@ class Settings:
     image_generation_enabled: bool = True
     huggingface_api_key: str | None = None
     huggingface_image_model: str = "black-forest-labs/FLUX.1-schnell"
+    huggingface_image_generation_enabled: bool = False
 
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
@@ -147,6 +148,7 @@ class Settings:
             huggingface_image_model=(
                 _optional(env.get("HUGGINGFACE_IMAGE_MODEL")) or "black-forest-labs/FLUX.1-schnell"
             ),
+            huggingface_image_generation_enabled=_bool(env, "HUGGINGFACE_IMAGE_ENABLED", False),
             embedding_model=_optional(env.get("EMBEDDING_MODEL")) or "gemini-embedding-001",
             embedding_dimensions=_int(env, "EMBEDDING_DIMENSIONS", 768),
             qdrant_url=_optional(env.get("QDRANT_URL")),
@@ -182,8 +184,15 @@ class Settings:
 
     @property
     def image_enabled(self) -> bool:
-        return bool(self.image_generation_enabled and (self.google_api_key or self.huggingface_api_key))
+        return bool(
+            self.image_generation_enabled
+            and (self.google_api_key or (self.huggingface_image_generation_enabled and self.huggingface_api_key))
+        )
 
     @property
     def huggingface_image_enabled(self) -> bool:
-        return bool(self.image_generation_enabled and self.huggingface_api_key)
+        return bool(
+            self.image_generation_enabled
+            and self.huggingface_image_generation_enabled
+            and self.huggingface_api_key
+        )

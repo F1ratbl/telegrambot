@@ -427,7 +427,7 @@ def test_visual_generator_uses_imagen_generate_images_for_creative_visuals() -> 
     assert "ekonomi botu" in client.models.calls[0]["prompt"]
 
 
-def test_visual_generator_uses_huggingface_before_imagen(monkeypatch) -> None:
+def test_visual_generator_ignores_huggingface_when_disabled(monkeypatch) -> None:
     calls: list[dict] = []
 
     def fake_post(url, **kwargs):
@@ -445,6 +445,37 @@ def test_visual_generator_uses_huggingface_before_imagen(monkeypatch) -> None:
             google_api_key="test",
             huggingface_api_key="hf_test",
             huggingface_image_model="black-forest-labs/FLUX.1-schnell",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("ekonomi botu için modern görsel oluştur")
+
+    assert image == b"imagen-bytes"
+    assert caption == "Ekonomi gorseli"
+    assert calls == []
+    assert client.models.calls[0]["model"] == "imagen-4.0-ultra-generate-001"
+
+
+def test_visual_generator_uses_huggingface_when_enabled(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            content=b"hf-image-bytes",
+            headers={"content-type": "image/png"},
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    client = _RecordingImageClient()
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            huggingface_api_key="hf_test",
+            huggingface_image_model="black-forest-labs/FLUX.1-schnell",
+            huggingface_image_generation_enabled=True,
         )
     )
     generator._client = client
