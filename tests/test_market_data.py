@@ -175,6 +175,21 @@ class _PaidImagenThenTextClient:
         self.models = _PaidImagenThenTextModels()
 
 
+class _TextPlanModels:
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    def generate_content(self, model, contents, config):
+        self.calls.append({"method": "generate_content", "model": model, "contents": contents, "config": config})
+        return _FakeGeminiResponse(self.reply)
+
+
+class _TextPlanClient:
+    def __init__(self, reply: str) -> None:
+        self.models = _TextPlanModels(reply)
+
+
 class _FakeAgent:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -536,6 +551,94 @@ def test_visual_generator_can_skip_paid_image_api_with_text_guided_mode() -> Non
     assert image.startswith(b"\x89PNG")
     assert [call["method"] for call in client.models.calls] == ["generate_content"]
     assert client.models.calls[0]["model"] == "gemini-2.5-flash"
+
+
+def test_visual_generator_recovers_markdown_json_text_plan() -> None:
+    client = _TextPlanClient(
+        """
+        ```json
+        {
+          "title": "Enflasyon",
+          "subtitle": "Veri, beklenti ve piyasa tepkisini ayır",
+          "steps": [
+            {"label": "Veri", "body": "Açıklanan oran önce beklentiyle karşılaştırılır."},
+            {"label": "Tepki", "body": "Faiz, kur ve altın kanalı ayrı ayrı izlenir."},
+            {"label": "Risk", "body": "Tek veri yerine trend ve merkez bankası tonu okunur."}
+          ],
+          "footer": "Yatırım tavsiyesi değildir."
+        }
+        ```
+        """
+    )
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            gemini_model="gemini-2.5-flash",
+            gemini_image_model="gemini-text-infographic",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("enflasyon infografik oluştur")
+
+    assert caption == "Ekonomi semasi"
+    assert image.startswith(b"\x89PNG")
+
+
+def test_visual_generator_recovers_relaxed_json_text_plan() -> None:
+    client = _TextPlanClient(
+        """
+        {
+          'title': 'Tahvil ihracı',
+          'subtitle': 'Borçlanma ve vade baskısını ayır',
+          'steps': [
+            {'label': 'Nakit', 'body': 'Şirket bugün finansman sağlar.'},
+            {'label': 'Vade', 'body': 'Geri ödeme takvimi nakit akışını etkiler.'},
+            {'label': 'Risk', 'body': 'Faiz yükü ve olası dönüşüm koşulları izlenir.'},
+          ],
+          'footer': 'Yatırım tavsiyesi değildir.',
+        }
+        """
+    )
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            gemini_model="gemini-2.5-flash",
+            gemini_image_model="gemini-text-infographic",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("tahvil ihracı infografik oluştur")
+
+    assert caption == "Ekonomi semasi"
+    assert image.startswith(b"\x89PNG")
+
+
+def test_visual_generator_recovers_labeled_text_plan() -> None:
+    client = _TextPlanClient(
+        """
+        TITLE: Bedelli sermaye artırımı
+        SUBTITLE: Nakit, sulanma ve kullanım amacı
+        1. Nakit: Şirket yeni payla kasaya kaynak koymayı hedefler.
+        2. Sulanma: Katılmayan ortakların pay oranı azalabilir.
+        3. Kullanım: Fonun borç, yatırım veya sermayeye gidişi izlenir.
+        FOOTER: Yatırım tavsiyesi değildir.
+        """
+    )
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            gemini_model="gemini-2.5-flash",
+            gemini_image_model="gemini-text-infographic",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("bedelli sermaye artırımı infografik oluştur")
+
+    assert caption == "Ekonomi semasi"
+    assert image.startswith(b"\x89PNG")
 
 
 def test_visual_generator_ignores_huggingface_when_disabled(monkeypatch) -> None:

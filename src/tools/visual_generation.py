@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import base64
 from io import BytesIO
+import ast
 import json
 import logging
+import os
 import re
+import tempfile
 from typing import Any
 
 from src.config import Settings
@@ -112,11 +115,7 @@ class EconomyVisualGenerator:
             response = self._client.models.generate_content(
                 model=model,
                 contents=[prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2,
-                    max_output_tokens=700,
-                ),
+                config=_build_visual_plan_config(types),
             )
         except TypeError:
             response = self._client.models.generate_content(
@@ -130,7 +129,12 @@ class EconomyVisualGenerator:
 
         spec = _parse_visual_plan(_extract_text(response), request_text)
         if spec is None:
-            logger.warning("Gemini text visual planning returned invalid JSON; using static fallback infographic.")
+            preview = _shorten(re.sub(r"\s+", " ", _extract_text(response) or ""), 220)
+            logger.warning(
+                "Gemini text visual planning returned an unusable plan; using static fallback infographic. "
+                "Preview: %s",
+                preview or "<empty>",
+            )
             return None
         return self._render_fallback_infographic(request_text, spec)
 
@@ -223,6 +227,7 @@ class EconomyVisualGenerator:
         return None
 
     def _render_fallback_infographic(self, request_text: str, spec: dict[str, Any] | None = None) -> bytes:
+        _ensure_matplotlib_config_dir()
         import matplotlib
 
         matplotlib.use("Agg")
@@ -344,7 +349,7 @@ class EconomyVisualGenerator:
 def _build_visual_plan_prompt(request_text: str) -> str:
     return (
         "You are planning a Turkish finance education infographic that will be rendered as PNG by code. "
-        "Return only valid JSON, no markdown. Do not invent prices, percentages, company facts, dates, "
+        "Return only valid JSON, no markdown, no explanation, no code fence. Do not invent prices, percentages, company facts, dates, "
         "logos, flags, or investment advice. Use short Turkish text that fits inside infographic boxes. "
         "Schema: {\"title\": string, \"subtitle\": string, \"steps\": [{\"label\": string, "
         "\"body\": string}, {\"label\": string, \"body\": string}, {\"label\": string, "
@@ -355,38 +360,225 @@ def _build_visual_plan_prompt(request_text: str) -> str:
     )
 
 
+def _ensure_matplotlib_config_dir() -> None:
+    if os.environ.get("MPLCONFIGDIR"):
+        return
+    cache_dir = os.path.join(tempfile.gettempdir(), "telegramaibot-matplotlib")
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+    except Exception:
+        return
+    os.environ["MPLCONFIGDIR"] = cache_dir
+
+
+def _build_visual_plan_config(types: Any) -> Any:
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "subtitle": {"type": "string"},
+            "steps": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "body": {"type": "string"},
+                    },
+                    "required": ["label", "body"],
+                },
+            },
+            "footer": {"type": "string"},
+        },
+        "required": ["title", "subtitle", "steps", "footer"],
+    }
+    kwargs: dict[str, Any] = {
+        "response_mime_type": "application/json",
+        "response_json_schema": schema,
+        "temperature": 0.1,
+        "max_output_tokens": 1200,
+    }
+    if hasattr(types, "ThinkingConfig"):
+        kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    try:
+        return types.GenerateContentConfig(**kwargs)
+    except Exception:
+        kwargs.pop("response_json_schema", None)
+        return types.GenerateContentConfig(**kwargs)
+
+
 def _parse_visual_plan(text: str | None, request_text: str) -> dict[str, Any] | None:
     if not text:
         return None
     cleaned = _strip_json_fence(text)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
+    data = _load_relaxed_json(cleaned)
+    if data is None:
         match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
         if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
+            return _parse_labeled_visual_plan(cleaned, request_text)
+        data = _load_relaxed_json(match.group(0))
+        if data is None:
+            return _parse_labeled_visual_plan(cleaned, request_text)
+    if isinstance(data, list):
+        data = {"steps": data}
     if not isinstance(data, dict):
-        return None
+        return _parse_labeled_visual_plan(cleaned, request_text)
 
-    title = _clean_plan_text(data.get("title"), _clean_topic(request_text), 58)
-    subtitle = _clean_plan_text(data.get("subtitle"), "Ekonomi yorumu icin hizli okuma semasi", 82)
+    title = _clean_plan_text(_get_first(data, "title", "baslik", "başlık"), _clean_topic(request_text), 58)
+    subtitle = _clean_plan_text(
+        _get_first(data, "subtitle", "alt_baslik", "altBaşlık", "alt başlık", "altbaslik"),
+        "Ekonomi yorumu icin hizli okuma semasi",
+        82,
+    )
     footer = _clean_plan_text(
-        data.get("footer"),
+        _get_first(data, "footer", "dipnot", "not", "uyarı", "uyari"),
         "Kesin yatirim tavsiyesi degildir; karar icin veri ve riskler birlikte okunmalidir.",
         125,
     )
-    steps = _coerce_plan_steps(data.get("steps") or data.get("blocks") or data.get("items"))
+    steps = _coerce_plan_steps(
+        _get_first(data, "steps", "blocks", "items", "adimlar", "adımlar", "maddeler")
+    )
     if steps is None:
-        return None
-    return {
+        return _parse_labeled_visual_plan(cleaned, request_text)
+    return _normalize_visual_plan({
         "title": title,
         "subtitle": subtitle,
         "steps": steps,
         "footer": footer,
+    }, request_text)
+
+
+def _load_relaxed_json(text: str) -> Any | None:
+    candidates = [
+        text,
+        re.sub(r",\s*([}\]])", r"\1", text),
+        text.replace("“", '"').replace("”", '"').replace("’", "'"),
+    ]
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    try:
+        value = ast.literal_eval(text)
+    except Exception:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    return None
+
+
+def _get_first(data: dict[Any, Any], *keys: str) -> Any:
+    normalized = {_normalize_key(key): value for key, value in data.items()}
+    for key in keys:
+        value = normalized.get(_normalize_key(key))
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _normalize_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9ğüşöçıİĞÜŞÖÇ]+", "", str(value).casefold())
+
+
+def _parse_labeled_visual_plan(text: str, request_text: str) -> dict[str, Any] | None:
+    lines = [line.strip(" \t\r\n-*•") for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return None
+
+    title: str | None = None
+    subtitle: str | None = None
+    footer: str | None = None
+    steps: list[dict[str, str]] = []
+
+    for line in lines:
+        key_match = re.match(r"^(title|başlık|baslik|subtitle|alt başlık|alt_baslik|footer|dipnot|not)\s*[:=-]\s*(.+)$", line, flags=re.IGNORECASE)
+        if key_match:
+            key = _normalize_key(key_match.group(1))
+            value = key_match.group(2).strip()
+            if key in {"title", "başlık", "baslik"}:
+                title = value
+            elif key in {"subtitle", "altbaşlık", "altbaslik"}:
+                subtitle = value
+            else:
+                footer = value
+            continue
+
+        step = _parse_step_line(line)
+        if step:
+            steps.append(step)
+
+    if len(steps) < 3:
+        steps = _steps_from_plain_lines(lines)
+    if len(steps) < 3:
+        return None
+
+    return _normalize_visual_plan(
+        {
+            "title": title or _clean_topic(request_text),
+            "subtitle": subtitle or "Ekonomi yorumu icin hizli okuma semasi",
+            "steps": steps[:3],
+            "footer": footer or "Kesin yatirim tavsiyesi degildir; karar icin veri ve riskler birlikte okunmalidir.",
+        },
+        request_text,
+    )
+
+
+def _parse_step_line(line: str) -> dict[str, str] | None:
+    cleaned = re.sub(
+        r"^(step|adım|adim|madde)?\s*\d{1,2}\s*[.)\-:]\s*",
+        "",
+        line,
+        flags=re.IGNORECASE,
+    ).strip()
+    if cleaned == line and not re.match(r"^\d{1,2}\s*[.)\-:]", line):
+        return None
+    for separator in [" - ", " – ", " — ", ": "]:
+        if separator in cleaned:
+            label, body = cleaned.split(separator, 1)
+            return {
+                "label": _clean_plan_text(label, "Adim", 20),
+                "body": _clean_plan_text(body, "", 88),
+            }
+    return {"label": "Adim", "body": _clean_plan_text(cleaned, "", 88)}
+
+
+def _steps_from_plain_lines(lines: list[str]) -> list[dict[str, str]]:
+    ignored_prefixes = ("title", "başlık", "baslik", "subtitle", "alt", "footer", "dipnot", "not")
+    candidates = [
+        line
+        for line in lines
+        if len(line) >= 12 and not line.lower().startswith(ignored_prefixes)
+    ]
+    steps: list[dict[str, str]] = []
+    for index, line in enumerate(candidates[:3]):
+        if ": " in line:
+            label, body = line.split(": ", 1)
+        else:
+            label, body = f"Adim {index + 1}", line
+        steps.append({
+            "label": _clean_plan_text(label, f"Adim {index + 1}", 20),
+            "body": _clean_plan_text(body, "", 88),
+        })
+    return steps
+
+
+def _normalize_visual_plan(spec: dict[str, Any], request_text: str) -> dict[str, Any] | None:
+    steps = _coerce_plan_steps(spec.get("steps"))
+    if steps is None:
+        return None
+    return {
+        "title": _clean_plan_text(spec.get("title"), _clean_topic(request_text), 58),
+        "subtitle": _clean_plan_text(spec.get("subtitle"), "Ekonomi yorumu icin hizli okuma semasi", 82),
+        "steps": steps,
+        "footer": _clean_plan_text(
+            spec.get("footer"),
+            "Kesin yatirim tavsiyesi degildir; karar icin veri ve riskler birlikte okunmalidir.",
+            125,
+        ),
     }
 
 
@@ -419,6 +611,12 @@ def _coerce_plan_steps(value: Any) -> list[dict[str, str]] | None:
         elif isinstance(item, (list, tuple)) and len(item) >= 2:
             label = _clean_plan_text(item[0], f"Adim {index + 1}", 20)
             body = _clean_plan_text(item[1], "", 88)
+        elif isinstance(item, str):
+            parsed = _parse_step_line(f"{index + 1}. {item}")
+            if not parsed:
+                return None
+            label = parsed["label"]
+            body = parsed["body"]
         else:
             return None
         if not body:
