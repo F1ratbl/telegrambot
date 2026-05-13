@@ -616,9 +616,9 @@ class PriceChartTool:
         import matplotlib
 
         matplotlib.use("Agg")
-        import matplotlib.dates as mdates
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
+        from matplotlib.ticker import FuncFormatter, MaxNLocator
 
         symbol = normalize_symbol(requested_symbol)
         name = DISPLAY_NAMES.get(symbol, requested_symbol.upper())
@@ -636,8 +636,8 @@ class PriceChartTool:
         ax.set_facecolor("#ffffff")
         volume_ax.set_facecolor("#ffffff")
 
-        x_values = mdates.date2num([candle.time for candle in candles])
-        candle_width = _candle_width(x_values)
+        x_values = list(range(len(candles)))
+        candle_width = 0.58
         for candle, x_value in zip(candles, x_values, strict=False):
             rising = candle.close >= candle.open
             color = "#16a34a" if rising else "#dc2626"
@@ -667,9 +667,17 @@ class PriceChartTool:
         volume_ax.spines["top"].set_visible(False)
         volume_ax.spines["right"].set_visible(False)
         volume_ax.tick_params(axis="y", labelsize=8)
-        date_format = "%d.%m %H:%M" if interval_hours else "%d.%m"
-        volume_ax.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
-        fig.autofmt_xdate()
+        volume_ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: _compact_number(value)))
+        tick_positions = _candle_tick_positions(len(candles))
+        volume_ax.set_xticks(tick_positions)
+        volume_ax.set_xticklabels(
+            [_format_candle_time(candles[position].time, interval_hours) for position in tick_positions],
+            rotation=35,
+            ha="right",
+        )
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_xlim(-0.8, len(candles) - 0.2)
+        volume_ax.set_xlim(-0.8, len(candles) - 0.2)
         fig.tight_layout()
 
         output = BytesIO()
@@ -1051,13 +1059,33 @@ def _optional_float_value(value: Any) -> float | None:
         return None
 
 
-def _candle_width(x_values: list[float]) -> float:
-    if len(x_values) < 2:
-        return 0.5
-    gaps = [right - left for left, right in zip(x_values, x_values[1:], strict=False) if right > left]
-    if not gaps:
-        return 0.5
-    return min(gaps) * 0.65
+def _candle_tick_positions(count: int) -> list[int]:
+    if count <= 0:
+        return []
+    if count <= 6:
+        return list(range(count))
+    step = max(1, count // 5)
+    positions = list(range(0, count, step))
+    if positions[-1] != count - 1:
+        positions.append(count - 1)
+    return positions
+
+
+def _format_candle_time(value: datetime, interval_hours: int | None = None) -> str:
+    if interval_hours:
+        return value.strftime("%d.%m %H:%M")
+    return value.strftime("%d.%m")
+
+
+def _compact_number(value: float) -> str:
+    absolute = abs(value)
+    if absolute >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}B"
+    if absolute >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if absolute >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return f"{value:.0f}"
 
 
 def _period_days(period: str) -> int:
