@@ -543,6 +543,49 @@ def test_price_chart_falls_back_to_stooq_when_yahoo_is_rate_limited(monkeypatch)
     assert any("stooq.com" in call for call in calls)
 
 
+def test_price_chart_tries_multiple_stooq_symbols_for_gold(monkeypatch) -> None:
+    stooq_symbols: list[str] = []
+
+    def fake_get(url, **kwargs):
+        if "finance.yahoo.com" in url:
+            return _FakeHttpResponse(429)
+        symbol = kwargs["params"]["s"]
+        stooq_symbols.append(symbol)
+        if symbol == "xauusd":
+            return _FakeHttpResponse(200, text="No data")
+        return _FakeHttpResponse(
+            200,
+            text=(
+                "Date,Open,High,Low,Close,Volume\n"
+                "2026-05-01,100,110,99,105,0\n"
+                "2026-05-02,105,112,101,111,0\n"
+            ),
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings())
+    points = tool._fetch_history("ALTIN", "1mo")
+
+    assert points[-1][1] == 111
+    assert stooq_symbols == ["xauusd", "gc.c"]
+
+
+def test_price_chart_returns_unavailable_image_when_all_providers_fail(monkeypatch) -> None:
+    def fake_get(url, **kwargs):
+        return _FakeHttpResponse(429 if "finance.yahoo.com" in url else 200, text="No data")
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings())
+    image, caption = tool.create_price_chart(tool.parse_request("altın son 1 ay grafik çiz"))
+
+    assert image.startswith(b"\x89PNG")
+    assert "veri gecici olarak alinamadi" in caption
+
+
 def test_memory_stores_name_only_when_explicitly_provided() -> None:
     memory = InMemoryConversationMemory()
     agent = EconomyAgent(Settings(google_api_key="test"), _DummyTool(), _DummyTool(), memory)

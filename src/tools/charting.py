@@ -60,11 +60,15 @@ class PriceChartTool:
         return ChartRequest(symbol=symbol, period=self._extract_period(lowered))
 
     def create_price_chart(self, request: ChartRequest) -> tuple[bytes, str]:
-        points = self._fetch_history(request.symbol, request.period)
-        if len(points) < 2:
-            raise RuntimeError("Grafik cizmek icin yeterli fiyat verisi bulunamadi.")
-        image = self._render_chart(request.symbol, request.period, points)
         caption = f"{DISPLAY_NAMES.get(normalize_symbol(request.symbol), request.symbol.upper())} {PERIOD_ALIASES[request.period][2]} fiyat grafigi"
+        try:
+            points = self._fetch_history(request.symbol, request.period)
+        except Exception as exc:
+            logger.warning("Price chart data unavailable for %s: %s", request.symbol, exc)
+            return self._render_unavailable_chart(request.symbol, request.period), f"{caption} - veri gecici olarak alinamadi"
+        if len(points) < 2:
+            return self._render_unavailable_chart(request.symbol, request.period), f"{caption} - veri gecici olarak alinamadi"
+        image = self._render_chart(request.symbol, request.period, points)
         return image, caption
 
     def _extract_symbol(self, text: str) -> str | None:
@@ -168,21 +172,28 @@ class PriceChartTool:
     def _fetch_stooq_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
         import requests
 
-        stooq_symbol = _stooq_symbol(requested_symbol)
-        if stooq_symbol is None:
+        stooq_symbols = _stooq_symbols(requested_symbol)
+        if not stooq_symbols:
             raise RuntimeError("Stooq fallback does not support this symbol.")
 
-        response = requests.get(
-            self.stooq_daily_url,
-            params={"s": stooq_symbol, "i": "d"},
-            headers=self.headers,
-            timeout=self.settings.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        points = self._parse_stooq_points(response.text, period)
-        if not points:
-            raise RuntimeError("Stooq response did not include close prices.")
-        return points
+        start, end = _stooq_date_range(period)
+        errors: list[str] = []
+        for stooq_symbol in stooq_symbols:
+            response = requests.get(
+                self.stooq_daily_url,
+                params={"s": stooq_symbol, "i": "d", "d1": start, "d2": end},
+                headers=self.headers,
+                timeout=self.settings.request_timeout_seconds,
+            )
+            try:
+                response.raise_for_status()
+                points = self._parse_stooq_points(response.text, period)
+                if points:
+                    return points
+                errors.append(f"{stooq_symbol}: empty")
+            except Exception as exc:
+                errors.append(f"{stooq_symbol}: {exc}")
+        raise RuntimeError("; ".join(errors) or "Stooq response did not include close prices.")
 
     def _parse_stooq_points(self, csv_text: str, period: str) -> list[tuple[datetime, float]]:
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_period_days(period))
@@ -232,6 +243,63 @@ class PriceChartTool:
         plt.close(fig)
         return output.getvalue()
 
+    def _render_unavailable_chart(self, requested_symbol: str, period: str) -> bytes:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        symbol = normalize_symbol(requested_symbol)
+        name = DISPLAY_NAMES.get(symbol, requested_symbol.upper())
+        fig, ax = plt.subplots(figsize=(9, 5), dpi=160)
+        fig.patch.set_facecolor("#f8fafc")
+        ax.set_facecolor("#f8fafc")
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.62,
+            f"{name} grafiği",
+            ha="center",
+            va="center",
+            fontsize=18,
+            fontweight="bold",
+            color="#111827",
+        )
+        ax.text(
+            0.5,
+            0.48,
+            "Geçmiş fiyat verisi şu an veri sağlayıcılardan alınamadı.",
+            ha="center",
+            va="center",
+            fontsize=12,
+            color="#334155",
+            wrap=True,
+        )
+        ax.text(
+            0.5,
+            0.38,
+            "Yahoo rate limit verebilir; yedek kaynak da boş döndü. Birkaç dakika sonra tekrar deneyebilirsiniz.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#64748b",
+            wrap=True,
+        )
+        ax.text(
+            0.5,
+            0.26,
+            f"İstenen dönem: {PERIOD_ALIASES[period][2]}",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#64748b",
+        )
+
+        output = BytesIO()
+        fig.savefig(output, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
+        plt.close(fig)
+        return output.getvalue()
+
 
 def _retry_after_seconds(value: str | None) -> float:
     if not value:
@@ -252,23 +320,29 @@ def _period_days(period: str) -> int:
     }.get(period, 45)
 
 
-def _stooq_symbol(requested_symbol: str) -> str | None:
+def _stooq_date_range(period: str) -> tuple[str, str]:
+    end = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = end - timedelta(days=_period_days(period))
+    return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+
+def _stooq_symbols(requested_symbol: str) -> list[str]:
     normalized = normalize_symbol(requested_symbol)
     stooq_symbols = {
-        "GC=F": "xauusd",
-        "SI=F": "xagusd",
-        "BTC-USD": "btcusd",
-        "ETH-USD": "ethusd",
-        "USDTRY=X": "usdtry",
-        "EURTRY=X": "eurtry",
-        "^GSPC": "^spx",
-        "^IXIC": "^ndq",
-        "^DJI": "^dji",
-        "^GDAXI": "dax",
-        "AMD": "amd.us",
-        "NVDA": "nvda.us",
-        "AAPL": "aapl.us",
-        "TSLA": "tsla.us",
-        "MSFT": "msft.us",
+        "GC=F": ["xauusd", "gc.c"],
+        "SI=F": ["xagusd", "si.c"],
+        "BTC-USD": ["btcusd"],
+        "ETH-USD": ["ethusd"],
+        "USDTRY=X": ["usdtry"],
+        "EURTRY=X": ["eurtry"],
+        "^GSPC": ["^spx"],
+        "^IXIC": ["^ndq"],
+        "^DJI": ["^dji"],
+        "^GDAXI": ["dax"],
+        "AMD": ["amd.us"],
+        "NVDA": ["nvda.us"],
+        "AAPL": ["aapl.us"],
+        "TSLA": ["tsla.us"],
+        "MSFT": ["msft.us"],
     }
-    return stooq_symbols.get(normalized)
+    return stooq_symbols.get(normalized, [])
