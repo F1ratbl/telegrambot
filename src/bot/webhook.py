@@ -9,7 +9,7 @@ from src.ai.agent import EconomyAgent
 from src.audio.speech import SpeechServiceError, SpeechToTextClient, TextToSpeechClient
 from src.bot.telegram import TelegramClient
 from src.config import Settings
-from src.tools.charting import PriceChartTool
+from src.tools.charting import ChartRequest, PriceChartTool
 from src.tools.visual_generation import EconomyVisualGenerator
 
 
@@ -100,7 +100,7 @@ def _handle_update(
     if not isinstance(text, str) or not text.strip():
         return False
 
-    if price_chart and _handle_price_chart_request(text, message, chat_id, telegram, price_chart):
+    if price_chart and _handle_price_chart_request(text, message, chat_id, telegram, price_chart, agent):
         return True
 
     if visual_generator and _handle_visual_request(text, message, chat_id, telegram, visual_generator):
@@ -124,8 +124,11 @@ def _handle_price_chart_request(
     chat_id: int | str,
     telegram: TelegramClient,
     price_chart: PriceChartTool,
+    agent: EconomyAgent,
 ) -> bool:
-    chart_request = price_chart.parse_request(text)
+    chart_request = _interpret_chart_request(agent, price_chart, text, message, chat_id)
+    if chart_request is None:
+        chart_request = price_chart.parse_request(text)
     if chart_request is None:
         return False
     try:
@@ -144,6 +147,27 @@ def _handle_price_chart_request(
             reply_to_message_id=message.get("message_id"),
         )
     return True
+
+
+def _interpret_chart_request(
+    agent: EconomyAgent,
+    price_chart: PriceChartTool,
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+) -> ChartRequest | None:
+    interpreter = getattr(agent, "interpret_chart_request", None)
+    if not callable(interpreter):
+        return None
+    try:
+        payload = interpreter(
+            user_message=text,
+            chat_id=_memory_chat_id(message, chat_id),
+        )
+        return price_chart.request_from_interpretation(payload)
+    except Exception:
+        logger.exception("Failed to interpret price chart request.")
+        return None
 
 
 def _handle_visual_request(

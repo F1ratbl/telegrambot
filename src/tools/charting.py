@@ -71,6 +71,27 @@ class PriceChartTool:
             interval_hours=self._extract_interval_hours(lowered),
         )
 
+    def request_from_interpretation(self, payload: dict[str, Any] | None) -> ChartRequest | None:
+        if not payload or not payload.get("is_chart_request"):
+            return None
+
+        raw_symbol = payload.get("symbol")
+        if not isinstance(raw_symbol, str) or not raw_symbol.strip():
+            return None
+
+        custom_days = _coerce_int(payload.get("range_days"), minimum=1, maximum=365)
+        interval_hours = _coerce_int(payload.get("interval_hours"), minimum=1, maximum=24)
+        period = payload.get("period")
+        if not isinstance(period, str) or period not in PERIOD_ALIASES:
+            period = _period_for_days(custom_days)
+
+        return ChartRequest(
+            symbol=raw_symbol.strip().upper(),
+            period=period,
+            custom_days=custom_days,
+            interval_hours=interval_hours,
+        )
+
     def create_price_chart(self, request: ChartRequest) -> tuple[bytes, str]:
         period_label = _period_label(request.period, request.custom_days, request.interval_hours)
         caption = f"{DISPLAY_NAMES.get(normalize_symbol(request.symbol), request.symbol.upper())} {period_label} fiyat grafigi"
@@ -121,15 +142,7 @@ class PriceChartTool:
     def _extract_period(self, lowered: str) -> str:
         custom_days = self._extract_custom_days(lowered)
         if custom_days is not None:
-            if custom_days <= 7:
-                return "7d"
-            if custom_days <= 45:
-                return "1mo"
-            if custom_days <= 110:
-                return "3mo"
-            if custom_days <= 210:
-                return "6mo"
-            return "1y"
+            return _period_for_days(custom_days)
         if any(marker in lowered for marker in ["7 gün", "7 gun", "1 hafta", "haftalık", "haftalik"]):
             return "7d"
         if any(marker in lowered for marker in ["3 ay", "3 aylık", "3 aylik"]):
@@ -142,7 +155,7 @@ class PriceChartTool:
 
     def _extract_custom_days(self, lowered: str) -> int | None:
         patterns = [
-            r"\bson\s+(\d{1,3})\s*g[uü]n(?:[üu]n|luk|l[uü]k)?\b",
+            r"\bson\s+(\d{1,3})\s*g[uü]n(?:[üu]n|deki|daki|lük|luk|l[uü]k)?\b",
             r"\b(\d{1,3})\s*g[uü]nl[uü]k\b",
         ]
         for pattern in patterns:
@@ -595,6 +608,30 @@ def _period_days(period: str) -> int:
         "6mo": 210,
         "1y": 400,
     }.get(period, 45)
+
+
+def _period_for_days(days: int | None) -> str:
+    if days is None:
+        return "1mo"
+    if days <= 7:
+        return "7d"
+    if days <= 45:
+        return "1mo"
+    if days <= 110:
+        return "3mo"
+    if days <= 210:
+        return "6mo"
+    return "1y"
+
+
+def _coerce_int(value: Any, minimum: int, maximum: int) -> int | None:
+    if value is None:
+        return None
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return None
+    return min(max(coerced, minimum), maximum)
 
 
 def _cutoff_datetime(period: str, custom_days: int | None = None) -> datetime:

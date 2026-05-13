@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
-from src.tools.charting import PriceChartTool
+from src.tools.charting import ChartRequest, PriceChartTool
 from src.tools.news import NewsItem, NewsSearchClient, _filter_relevant_items, _rss_query_candidates
 from src.tools.visual_generation import EconomyVisualGenerator
 from src.bot.telegram import TelegramClient, _sanitize_telegram_text
@@ -220,6 +220,41 @@ class _FakeChartTool:
         return b"chart-bytes", "Altin grafigi"
 
 
+class _ModelOnlyChartTool:
+    def __init__(self) -> None:
+        self.parsed_texts: list[str] = []
+        self.created_requests: list[ChartRequest] = []
+
+    def request_from_interpretation(self, payload):
+        if not payload or not payload.get("is_chart_request"):
+            return None
+        return ChartRequest(
+            symbol=payload["symbol"],
+            period=payload["period"],
+            custom_days=payload.get("range_days"),
+            interval_hours=payload.get("interval_hours"),
+        )
+
+    def parse_request(self, text: str):
+        self.parsed_texts.append(text)
+        return None
+
+    def create_price_chart(self, request):
+        self.created_requests.append(request)
+        return b"model-chart-bytes", "AMD 4 saatlik, son 4 gun fiyat grafigi"
+
+
+class _FakeChartInterpreterAgent(_FakeAgent):
+    def __init__(self, payload: dict) -> None:
+        super().__init__()
+        self.payload = payload
+        self.interpreted_messages: list[dict] = []
+
+    def interpret_chart_request(self, user_message: str, chat_id: str | None = None):
+        self.interpreted_messages.append({"message": user_message, "chat_id": chat_id})
+        return self.payload
+
+
 class _FakeVisualGenerator:
     def parse_request(self, text: str):
         return text if "infografik" in text.lower() else None
@@ -380,11 +415,74 @@ def test_webhook_chart_request_returns_photo_without_agent() -> None:
     assert telegram.photos[0]["caption"] == "Altin grafigi"
 
 
+def test_webhook_chart_request_can_be_interpreted_by_model() -> None:
+    agent = _FakeChartInterpreterAgent(
+        {
+            "is_chart_request": True,
+            "symbol": "AMD",
+            "range_days": 4,
+            "interval_hours": 4,
+            "period": "7d",
+        }
+    )
+    telegram = _FakeTelegram()
+    chart_tool = _ModelOnlyChartTool()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 11,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "amd nin son dört güne bakan dört saatlik mumlarını atar mısın",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        price_chart=chart_tool,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert agent.interpreted_messages == [
+        {
+            "message": "amd nin son dört güne bakan dört saatlik mumlarını atar mısın",
+            "chat_id": "123:456",
+        }
+    ]
+    assert chart_tool.parsed_texts == []
+    assert chart_tool.created_requests == [ChartRequest("AMD", "7d", custom_days=4, interval_hours=4)]
+    assert telegram.photos[0]["image"] == b"model-chart-bytes"
+
+
+def test_price_chart_builds_request_from_model_interpretation() -> None:
+    tool = PriceChartTool(Settings())
+
+    request = tool.request_from_interpretation(
+        {
+            "is_chart_request": True,
+            "symbol": "amd",
+            "range_days": 4,
+            "interval_hours": 4,
+            "period": "bad-period",
+        }
+    )
+
+    assert request == ChartRequest("AMD", "7d", custom_days=4, interval_hours=4)
+
+
 def test_price_chart_parses_custom_day_range_and_hour_interval() -> None:
     tool = PriceChartTool(Settings())
 
     request = tool.parse_request("amd 4 saatlik grafik çiz son 4 günün")
 
+    assert request is not None
+    assert request.symbol == "AMD"
+    assert request.period == "7d"
+    assert request.custom_days == 4
+    assert request.interval_hours == 4
+
+    request = tool.parse_request("amd nin son 4 gündeki 4 saatlik grafiğini çiz")
     assert request is not None
     assert request.symbol == "AMD"
     assert request.period == "7d"

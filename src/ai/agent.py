@@ -151,6 +151,73 @@ class EconomyAgent:
         )
         return self._extract_text(response)
 
+    def interpret_chart_request(self, user_message: str, chat_id: str | None = None) -> dict[str, Any] | None:
+        if not user_message.strip() or not self.settings.google_api_key:
+            return None
+
+        try:
+            from google import genai
+            from google.genai import types
+
+            if self._client is None:
+                self._client = genai.Client(api_key=self.settings.google_api_key)
+
+            response = self._generate_content_with_retry(
+                model=self.settings.gemini_model,
+                contents=[self._chart_interpretation_prompt(user_message, chat_id)],
+                config=self._build_chart_interpretation_config(types),
+            )
+            return self._parse_chart_interpretation(self._extract_text_or_none(response))
+        except Exception:
+            logger.exception("Gemini chart request interpretation failed.")
+            return None
+
+    def _chart_interpretation_prompt(self, user_message: str, chat_id: str | None) -> str:
+        active_asset = self._infer_active_asset(chat_id, user_message)
+        lines = [
+            "Kullanici mesajini analiz et ve yalnizca JSON dondur.",
+            "Gorev: Kullanici bir finansal varlik icin fiyat grafigi/grafik cizimi istiyor mu belirle.",
+            "Dogal Turkce ve Ingilizce ifadeleri yorumla; hazir komut kalibi varsayma.",
+            "Grafik istegi degilse veya varlik/sembol anlasilmiyorsa is_chart_request false olsun.",
+            "Sembol alaninda standart kisa kod kullan: AMD, NVDA, AAPL, TSLA, MSFT, SP500, NASDAQ, DAX, BIST100, GOLD, SILVER, BRENT, BTCUSD, ETHUSD, USDTRY, EURTRY.",
+            "range_days kullanici acikca gun araligi verirse sayi olsun: 'son 4 gun', '4 gundeki' -> 4. Yoksa null.",
+            "interval_hours kullanici mum/veri araligi verirse saat sayisi olsun: '4 saatlik' -> 4. Yoksa null.",
+            "period range_days yoksa 7d, 1mo, 3mo, 6mo veya 1y degerlerinden biri olsun. Emin degilsen 1mo.",
+            'JSON bicimi: {"is_chart_request": true, "symbol": "AMD", "range_days": 4, "interval_hours": 4, "period": "7d"}',
+        ]
+        if active_asset:
+            lines.append(f"Aktif varlik baglami: {active_asset}")
+        lines.append(f"Kullanici mesaji: {user_message}")
+        return "\n".join(lines)
+
+    def _build_chart_interpretation_config(self, types: Any) -> Any:
+        kwargs: dict[str, Any] = {
+            "system_instruction": "Finans sohbetlerinde grafik isteklerini yapilandirilmis JSON'a ceviren bir yorumlayicisin.",
+            "max_output_tokens": 300,
+            "response_mime_type": "application/json",
+        }
+        if self.settings.gemini_temperature is not None:
+            kwargs["temperature"] = 0
+        try:
+            return types.GenerateContentConfig(**kwargs)
+        except TypeError:
+            kwargs.pop("response_mime_type", None)
+            return types.GenerateContentConfig(**kwargs)
+
+    def _parse_chart_interpretation(self, text: str | None) -> dict[str, Any] | None:
+        if not text:
+            return None
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError:
+            logger.warning("Gemini chart interpretation returned invalid JSON: %s", cleaned[:300])
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def _generate_content_with_retry(self, model: str, contents: list[Any], config: Any) -> Any:
         attempts = max(1, self.settings.gemini_retry_attempts)
         last_exception: Exception | None = None
