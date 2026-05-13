@@ -80,12 +80,38 @@ class _FakeGeminiClient:
 
 
 class _FailingImageModels:
-    def generate_content(self, model, contents, config):
+    def generate_images(self, model, prompt, config):
         raise RuntimeError("429 RESOURCE_EXHAUSTED")
 
 
 class _FailingImageClient:
     models = _FailingImageModels()
+
+
+class _FakeGeneratedImageBytes:
+    image_bytes = b"imagen-bytes"
+
+
+class _FakeGeneratedImage:
+    image = _FakeGeneratedImageBytes()
+
+
+class _FakeGenerateImagesResponse:
+    generated_images = [_FakeGeneratedImage()]
+
+
+class _RecordingImageModels:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def generate_images(self, model, prompt, config):
+        self.calls.append({"model": model, "prompt": prompt, "config": config})
+        return _FakeGenerateImagesResponse()
+
+
+class _RecordingImageClient:
+    def __init__(self) -> None:
+        self.models = _RecordingImageModels()
 
 
 class _FakeAgent:
@@ -355,6 +381,24 @@ def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:
 
     assert caption == "Ekonomi semasi"
     assert image.startswith(b"\x89PNG")
+
+
+def test_visual_generator_uses_imagen_generate_images() -> None:
+    client = _RecordingImageClient()
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            gemini_image_model="imagen-4.0-ultra-generate-001",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("enflasyon faiz ilişkisini infografik yap")
+
+    assert image == b"imagen-bytes"
+    assert caption == "Ekonomi gorseli"
+    assert client.models.calls[0]["model"] == "imagen-4.0-ultra-generate-001"
+    assert "enflasyon faiz" in client.models.calls[0]["prompt"]
 
 
 def test_webhook_voice_message_falls_back_to_text_when_tts_fails() -> None:

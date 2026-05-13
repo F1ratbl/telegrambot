@@ -46,10 +46,15 @@ class EconomyVisualGenerator:
 
         prompt = self._build_prompt(request_text)
         try:
-            response = self._client.models.generate_content(
+            response = self._client.models.generate_images(
                 model=self.settings.gemini_image_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio="16:9",
+                    output_mime_type="image/png",
+                    enhance_prompt=True,
+                ),
             )
             image = self._extract_image_bytes(response)
             if image:
@@ -69,6 +74,13 @@ class EconomyVisualGenerator:
         )
 
     def _extract_image_bytes(self, response: Any) -> bytes | None:
+        generated_images = getattr(response, "generated_images", None) or []
+        for generated_image in generated_images:
+            image = getattr(generated_image, "image", None)
+            image_bytes = getattr(image, "image_bytes", None)
+            if image_bytes:
+                return image_bytes
+
         candidates = getattr(response, "candidates", None) or []
         for candidate in candidates:
             content = getattr(candidate, "content", None)

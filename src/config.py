@@ -92,7 +92,7 @@ class Settings:
     gemini_thinking_level: str | None = None
     gemini_retry_attempts: int = 3
     gemini_retry_base_delay_seconds: float = 1.5
-    gemini_image_model: str = "gemini-2.5-flash-image"
+    gemini_image_model: str = "imagen-4.0-ultra-generate-001"
     image_generation_enabled: bool = True
 
     embedding_model: str = "gemini-embedding-001"
@@ -134,7 +134,7 @@ class Settings:
             gemini_thinking_level=_optional(env.get("GEMINI_THINKING_LEVEL")),
             gemini_retry_attempts=_int(env, "GEMINI_RETRY_ATTEMPTS", 3),
             gemini_retry_base_delay_seconds=_float(env, "GEMINI_RETRY_BASE_DELAY_SECONDS", 1.5),
-            gemini_image_model=_optional(env.get("GEMINI_IMAGE_MODEL")) or "gemini-2.5-flash-image",
+            gemini_image_model=_optional(env.get("GEMINI_IMAGE_MODEL")) or "imagen-4.0-ultra-generate-001",
             image_generation_enabled=_bool(env, "IMAGE_GENERATION_ENABLED", True),
             embedding_model=_optional(env.get("EMBEDDING_MODEL")) or "gemini-embedding-001",
             embedding_dimensions=_int(env, "EMBEDDING_DIMENSIONS", 768),
