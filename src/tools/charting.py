@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
-from datetime import datetime
-from io import BytesIO
+from datetime import datetime, timedelta, timezone
+from io import BytesIO, StringIO
 import logging
 import re
+import time
 from typing import Any
 
 from src.config import Settings
@@ -30,7 +32,18 @@ class ChartRequest:
 
 
 class PriceChartTool:
-    yahoo_chart_url = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    yahoo_chart_urls = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+        "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
+    )
+    stooq_daily_url = "https://stooq.com/q/d/l/"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/csv,*/*",
+    }
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -95,17 +108,53 @@ class PriceChartTool:
         return "1mo"
 
     def _fetch_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+        errors: list[str] = []
+        try:
+            return self._fetch_yahoo_history(requested_symbol, period)
+        except Exception as exc:
+            errors.append(f"Yahoo: {exc}")
+            logger.warning("Yahoo history failed for %s: %s", requested_symbol, exc)
+
+        try:
+            return self._fetch_stooq_history(requested_symbol, period)
+        except Exception as exc:
+            errors.append(f"Stooq: {exc}")
+            logger.warning("Stooq history failed for %s: %s", requested_symbol, exc)
+
+        raise RuntimeError("; ".join(errors) or "Grafik verisi alinamadi.")
+
+    def _fetch_yahoo_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
         import requests
 
         symbol = normalize_symbol(requested_symbol)
         range_value, interval, _ = PERIOD_ALIASES[period]
-        response = requests.get(
-            self.yahoo_chart_url.format(symbol=symbol),
-            params={"range": range_value, "interval": interval},
-            timeout=self.settings.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        data = response.json()
+        response = None
+        last_exception: Exception | None = None
+        for url_template in self.yahoo_chart_urls:
+            for attempt in range(2):
+                try:
+                    response = requests.get(
+                        url_template.format(symbol=symbol),
+                        params={"range": range_value, "interval": interval},
+                        headers=self.headers,
+                        timeout=self.settings.request_timeout_seconds,
+                    )
+                    if response.status_code == 429 and attempt == 0:
+                        retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+                        time.sleep(retry_after)
+                        continue
+                    response.raise_for_status()
+                    data = response.json()
+                    points = self._parse_yahoo_points(data)
+                    if points:
+                        return points
+                    raise RuntimeError("Yahoo chart response did not include close prices.")
+                except Exception as exc:
+                    last_exception = exc
+                    continue
+        raise last_exception or RuntimeError("Yahoo chart request failed.")
+
+    def _parse_yahoo_points(self, data: dict[str, Any]) -> list[tuple[datetime, float]]:
         result = (((data.get("chart") or {}).get("result") or [None])[0]) or {}
         timestamps = result.get("timestamp") or []
         close_values = ((((result.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or [])
@@ -114,6 +163,42 @@ class PriceChartTool:
             if close is None:
                 continue
             points.append((datetime.fromtimestamp(timestamp), float(close)))
+        return points
+
+    def _fetch_stooq_history(self, requested_symbol: str, period: str) -> list[tuple[datetime, float]]:
+        import requests
+
+        stooq_symbol = _stooq_symbol(requested_symbol)
+        if stooq_symbol is None:
+            raise RuntimeError("Stooq fallback does not support this symbol.")
+
+        response = requests.get(
+            self.stooq_daily_url,
+            params={"s": stooq_symbol, "i": "d"},
+            headers=self.headers,
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        points = self._parse_stooq_points(response.text, period)
+        if not points:
+            raise RuntimeError("Stooq response did not include close prices.")
+        return points
+
+    def _parse_stooq_points(self, csv_text: str, period: str) -> list[tuple[datetime, float]]:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=_period_days(period))
+        points: list[tuple[datetime, float]] = []
+        for row in csv.DictReader(StringIO(csv_text)):
+            date_value = row.get("Date")
+            close_value = row.get("Close")
+            if not date_value or not close_value or close_value.upper() == "N/D":
+                continue
+            try:
+                date = datetime.strptime(date_value, "%Y-%m-%d")
+                close = float(close_value)
+            except ValueError:
+                continue
+            if date >= cutoff:
+                points.append((date, close))
         return points
 
     def _render_chart(self, requested_symbol: str, period: str, points: list[tuple[datetime, float]]) -> bytes:
@@ -146,3 +231,44 @@ class PriceChartTool:
         fig.savefig(output, format="png", bbox_inches="tight")
         plt.close(fig)
         return output.getvalue()
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.75
+    try:
+        return min(max(float(value), 0.25), 3.0)
+    except ValueError:
+        return 0.75
+
+
+def _period_days(period: str) -> int:
+    return {
+        "7d": 14,
+        "1mo": 45,
+        "3mo": 110,
+        "6mo": 210,
+        "1y": 400,
+    }.get(period, 45)
+
+
+def _stooq_symbol(requested_symbol: str) -> str | None:
+    normalized = normalize_symbol(requested_symbol)
+    stooq_symbols = {
+        "GC=F": "xauusd",
+        "SI=F": "xagusd",
+        "BTC-USD": "btcusd",
+        "ETH-USD": "ethusd",
+        "USDTRY=X": "usdtry",
+        "EURTRY=X": "eurtry",
+        "^GSPC": "^spx",
+        "^IXIC": "^ndq",
+        "^DJI": "^dji",
+        "^GDAXI": "dax",
+        "AMD": "amd.us",
+        "NVDA": "nvda.us",
+        "AAPL": "aapl.us",
+        "TSLA": "tsla.us",
+        "MSFT": "msft.us",
+    }
+    return stooq_symbols.get(normalized)

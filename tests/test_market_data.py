@@ -1,4 +1,5 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
+from src.tools.charting import PriceChartTool
 from src.tools.news import NewsItem, NewsSearchClient, _filter_relevant_items, _rss_query_candidates
 from src.bot.telegram import TelegramClient, _sanitize_telegram_text
 from src.bot.webhook import _handle_update
@@ -38,6 +39,21 @@ class _FakeMarket:
 
     def get_snapshot(self, symbols=None) -> dict:
         return self.snapshot
+
+
+class _FakeHttpResponse:
+    def __init__(self, status_code: int, text: str = "", data: dict | None = None) -> None:
+        self.status_code = status_code
+        self.text = text
+        self._data = data or {}
+        self.headers: dict[str, str] = {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"{self.status_code} error")
+
+    def json(self) -> dict:
+        return self._data
 
 
 class _FakeGeminiResponse:
@@ -394,6 +410,34 @@ def test_telegram_sends_photo() -> None:
     assert client.uploads[0]["method"] == "sendPhoto"
     assert client.uploads[0]["payload"]["caption"] == "Grafik"
     assert "photo" in client.uploads[0]["files"]
+
+
+def test_price_chart_falls_back_to_stooq_when_yahoo_is_rate_limited(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if "finance.yahoo.com" in url:
+            return _FakeHttpResponse(429)
+        return _FakeHttpResponse(
+            200,
+            text=(
+                "Date,Open,High,Low,Close,Volume\n"
+                "2026-05-01,100,110,99,105,0\n"
+                "2026-05-02,105,112,101,111,0\n"
+            ),
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings())
+    points = tool._fetch_history("ALTIN", "1mo")
+
+    assert len(points) == 2
+    assert points[-1][1] == 111
+    assert any("finance.yahoo.com" in call for call in calls)
+    assert any("stooq.com" in call for call in calls)
 
 
 def test_memory_stores_name_only_when_explicitly_provided() -> None:
