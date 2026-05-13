@@ -1,6 +1,7 @@
 from src.tools.market_data import calculate_change, normalize_symbol, MarketDataClient, MarketQuote
 from src.tools.charting import PriceChartTool
 from src.tools.news import NewsItem, NewsSearchClient, _filter_relevant_items, _rss_query_candidates
+from src.tools.visual_generation import EconomyVisualGenerator
 from src.bot.telegram import TelegramClient, _sanitize_telegram_text
 from src.bot.webhook import _handle_update
 from src.bot.memory import InMemoryConversationMemory
@@ -76,6 +77,15 @@ class _RecordingGeminiModels:
 class _FakeGeminiClient:
     def __init__(self, reply: str) -> None:
         self.models = _RecordingGeminiModels(reply)
+
+
+class _FailingImageModels:
+    def generate_content(self, model, contents, config):
+        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+
+class _FailingImageClient:
+    models = _FailingImageModels()
 
 
 class _FakeAgent:
@@ -335,6 +345,16 @@ def test_webhook_visual_request_returns_photo_without_agent() -> None:
     assert agent.messages == []
     assert telegram.photos[0]["image"] == b"visual-bytes"
     assert telegram.photos[0]["caption"] == "Ekonomi gorseli"
+
+
+def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:
+    generator = EconomyVisualGenerator(Settings(google_api_key="test"))
+    generator._client = _FailingImageClient()
+
+    image, caption = generator.generate("bedelli sermaye artırımı infografik oluştur")
+
+    assert caption == "Ekonomi semasi"
+    assert image.startswith(b"\x89PNG")
 
 
 def test_webhook_voice_message_falls_back_to_text_when_tts_fails() -> None:
