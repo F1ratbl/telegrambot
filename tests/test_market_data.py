@@ -43,11 +43,19 @@ class _FakeMarket:
 
 
 class _FakeHttpResponse:
-    def __init__(self, status_code: int, text: str = "", data: dict | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        text: str = "",
+        data: dict | None = None,
+        content: bytes = b"",
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status_code = status_code
         self.text = text
         self._data = data or {}
-        self.headers: dict[str, str] = {}
+        self.content = content
+        self.headers: dict[str, str] = headers or {}
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -399,6 +407,37 @@ def test_visual_generator_uses_imagen_generate_images() -> None:
     assert caption == "Ekonomi gorseli"
     assert client.models.calls[0]["model"] == "imagen-4.0-ultra-generate-001"
     assert "enflasyon faiz" in client.models.calls[0]["prompt"]
+
+
+def test_visual_generator_uses_huggingface_before_imagen(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            content=b"hf-image-bytes",
+            headers={"content-type": "image/png"},
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    client = _RecordingImageClient()
+    generator = EconomyVisualGenerator(
+        Settings(
+            google_api_key="test",
+            huggingface_api_key="hf_test",
+            huggingface_image_model="black-forest-labs/FLUX.1-schnell",
+        )
+    )
+    generator._client = client
+
+    image, caption = generator.generate("hisse bölünmesini görselle anlat")
+
+    assert image == b"hf-image-bytes"
+    assert caption == "Ekonomi gorseli"
+    assert calls[0]["headers"]["Authorization"] == "Bearer hf_test"
+    assert "black-forest-labs/FLUX.1-schnell" in calls[0]["url"]
+    assert client.models.calls == []
 
 
 def test_webhook_voice_message_falls_back_to_text_when_tts_fails() -> None:

@@ -94,6 +94,8 @@ class Settings:
     gemini_retry_base_delay_seconds: float = 1.5
     gemini_image_model: str = "imagen-4.0-ultra-generate-001"
     image_generation_enabled: bool = True
+    huggingface_api_key: str | None = None
+    huggingface_image_model: str = "black-forest-labs/FLUX.1-schnell"
 
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
@@ -136,6 +138,14 @@ class Settings:
             gemini_retry_base_delay_seconds=_float(env, "GEMINI_RETRY_BASE_DELAY_SECONDS", 1.5),
             gemini_image_model=_optional(env.get("GEMINI_IMAGE_MODEL")) or "imagen-4.0-ultra-generate-001",
             image_generation_enabled=_bool(env, "IMAGE_GENERATION_ENABLED", True),
+            huggingface_api_key=(
+                _optional(env.get("HUGGINGFACE_API_KEY"))
+                or _optional(env.get("HUGGINGFACE_HUB_TOKEN"))
+                or _optional(env.get("HF_TOKEN"))
+            ),
+            huggingface_image_model=(
+                _optional(env.get("HUGGINGFACE_IMAGE_MODEL")) or "black-forest-labs/FLUX.1-schnell"
+            ),
             embedding_model=_optional(env.get("EMBEDDING_MODEL")) or "gemini-embedding-001",
             embedding_dimensions=_int(env, "EMBEDDING_DIMENSIONS", 768),
             qdrant_url=_optional(env.get("QDRANT_URL")),
@@ -170,4 +180,8 @@ class Settings:
 
     @property
     def image_enabled(self) -> bool:
-        return bool(self.google_api_key and self.image_generation_enabled)
+        return bool(self.image_generation_enabled and (self.google_api_key or self.huggingface_api_key))
+
+    @property
+    def huggingface_image_enabled(self) -> bool:
+        return bool(self.image_generation_enabled and self.huggingface_api_key)

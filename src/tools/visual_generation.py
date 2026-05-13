@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 class EconomyVisualGenerator:
+    huggingface_text_to_image_url = "https://api-inference.huggingface.co/models/{model}"
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._client = None
@@ -38,13 +40,21 @@ class EconomyVisualGenerator:
         if not self.settings.image_enabled:
             return self._render_fallback_infographic(request_text), "Ekonomi semasi"
 
+        prompt = self._build_prompt(request_text)
+        if self.settings.huggingface_image_enabled:
+            image = self._generate_with_huggingface(prompt)
+            if image:
+                return image, "Ekonomi gorseli"
+
+        if not self.settings.google_api_key:
+            return self._render_fallback_infographic(request_text), "Ekonomi semasi"
+
         from google import genai
         from google.genai import types
 
         if self._client is None:
             self._client = genai.Client(api_key=self.settings.google_api_key)
 
-        prompt = self._build_prompt(request_text)
         try:
             response = self._client.models.generate_images(
                 model=self.settings.gemini_image_model,
@@ -62,6 +72,55 @@ class EconomyVisualGenerator:
         except Exception as exc:
             logger.warning("Gemini image generation failed; using fallback infographic: %s", exc)
         return self._render_fallback_infographic(request_text), "Ekonomi semasi"
+
+    def _generate_with_huggingface(self, prompt: str) -> bytes | None:
+        import requests
+
+        model = self.settings.huggingface_image_model.strip()
+        if not model:
+            return None
+
+        url = self.huggingface_text_to_image_url.format(model=model)
+        headers = {
+            "Authorization": f"Bearer {self.settings.huggingface_api_key}",
+            "Accept": "image/png,image/jpeg,application/json",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "width": 1024,
+                "height": 576,
+                "num_inference_steps": 4,
+                "guidance_scale": 1.0,
+                "negative_prompt": (
+                    "blurry, unreadable text, fake price chart, investment advice, noisy layout, "
+                    "decorative clutter"
+                ),
+            },
+            "options": {"wait_for_model": True},
+        }
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=max(self.settings.request_timeout_seconds, 20),
+            )
+            content_type = response.headers.get("content-type", "")
+            if response.status_code >= 400:
+                logger.warning(
+                    "Hugging Face image generation failed with %s: %s",
+                    response.status_code,
+                    response.text[:500],
+                )
+                return None
+            if content_type.startswith("image/") and response.content:
+                return response.content
+            logger.warning("Hugging Face returned non-image response: %s", response.text[:500])
+        except Exception as exc:
+            logger.warning("Hugging Face image generation failed; trying next fallback: %s", exc)
+        return None
 
     def _build_prompt(self, request_text: str) -> str:
         return (
