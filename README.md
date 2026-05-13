@@ -20,10 +20,19 @@ TELEGRAM_BOT_TOKEN=...
 TELEGRAM_WEBHOOK_SECRET=uzun-rastgele-bir-secret
 GOOGLE_API_KEY=...
 GEMINI_MODEL=gemini-2.5-flash
+GEMINI_IMAGE_MODEL=gemini-text-infographic
+GEMINI_VISUAL_TEXT_MODEL=gemini-2.5-flash
 QDRANT_URL=https://...qdrant.tech
 QDRANT_API_KEY=...
 QDRANT_COLLECTION=economy_knowledge
 ```
+
+`GEMINI_IMAGE_MODEL=gemini-text-infographic` ucretli Imagen/Nano Banana API'lerini
+cagirmadan, Gemini'nin ucretsiz text modeliyle infografik plani uretir ve PNG'yi
+yerelde render eder. Native image API kullanmak icin bunun yerine
+`imagen-4.0-generate-001`, `imagen-4.0-fast-generate-001`,
+`imagen-4.0-ultra-generate-001` veya `gemini-2.5-flash-image` verilebilir; bu
+modeller Google tarafinda paid tier gerektirebilir.
 
 ## Lokal Calistirma
 
