@@ -40,9 +40,6 @@ class EconomyVisualGenerator:
         return text.strip()
 
     def generate(self, request_text: str) -> tuple[bytes, str]:
-        if self._should_use_deterministic_diagram(request_text):
-            return self._render_fallback_infographic(request_text), "Ekonomi semasi"
-
         if not self.settings.image_enabled:
             return self._render_fallback_infographic(request_text), "Ekonomi semasi"
 
@@ -137,44 +134,6 @@ class EconomyVisualGenerator:
             "Use simple visual metaphors, clear spacing, and at most three short Turkish labels. "
             "The image must directly explain the requested concept, not a generic market dashboard. "
             f"Konu: {request_text}"
-        )
-
-    def _should_use_deterministic_diagram(self, request_text: str) -> bool:
-        lowered = request_text.lower()
-        deterministic_markers = [
-            "görselle anlat",
-            "gorselle anlat",
-            "infografik",
-            "şema",
-            "sema",
-            "kavram",
-            "nedir",
-            "ne demek",
-            "ne anlama",
-        ]
-        finance_concepts = [
-            "dilution",
-            "sulanma",
-            "hisse bölünmesi",
-            "hisse bolunmesi",
-            "bedelli",
-            "bedelsiz",
-            "sermaye artırımı",
-            "sermaye artirimi",
-            "açığa satış",
-            "aciga satis",
-            "rüçhan",
-            "ruchan",
-            "temettü",
-            "temettu",
-            "convertible",
-            "tahvil",
-            "brüt takas",
-            "brut takas",
-            "devre kesici",
-        ]
-        return any(marker in lowered for marker in deterministic_markers) and any(
-            concept in lowered for concept in finance_concepts
         )
 
     def _extract_image_bytes(self, response: Any) -> bytes | None:
@@ -320,6 +279,18 @@ def _shorten(text: str, limit: int) -> str:
 
 def _fallback_steps(topic: str) -> list[tuple[str, str]]:
     lowered = topic.lower()
+    if any(marker in lowered for marker in ["hisse bölünmesi", "hisse bolunmesi", "stock split"]):
+        return [
+            ("Ne oluyor?", "Pay adedi artar; pay basina fiyat ayni oranda teorik olarak duser."),
+            ("Deger etkisi", "Yatirimcinin toplam portfoy degeri bolunme aninda teorik olarak degismez."),
+            ("Piyasa yorumu", "Likidite ve ilgi artabilir; ama bolunme tek basina temel deger yaratmaz."),
+        ]
+    if any(marker in lowered for marker in ["dilution", "sulanma"]):
+        return [
+            ("Ne oluyor?", "Yeni pay veya donusebilir menkul kiymetler ortaklik yuzdesini azaltabilir."),
+            ("Olasi arti", "Sirket kasasina giren kaynak buyume, borc azaltma veya yatirim icin kullanilabilir."),
+            ("Ana risk", "Kaynak verimli kullanilmazsa pay basina kar ve mevcut ortak degeri baskilanabilir."),
+        ]
     if any(marker in lowered for marker in ["bedelli", "sermaye"]):
         return [
             ("Ne oluyor?", "Sirket yeni pay ihraciyla kasasina nakit koymaya calisir."),

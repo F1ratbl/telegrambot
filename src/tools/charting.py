@@ -179,14 +179,20 @@ class PriceChartTool:
         start, end = _stooq_date_range(period)
         errors: list[str] = []
         for stooq_symbol in stooq_symbols:
+            params = {"s": stooq_symbol, "i": "d", "d1": start, "d2": end}
+            if self.settings.stooq_api_key:
+                params["apikey"] = self.settings.stooq_api_key
             response = requests.get(
                 self.stooq_daily_url,
-                params={"s": stooq_symbol, "i": "d", "d1": start, "d2": end},
+                params=params,
                 headers=self.headers,
                 timeout=self.settings.request_timeout_seconds,
             )
             try:
                 response.raise_for_status()
+                if _stooq_requires_api_key(response.text):
+                    errors.append(f"{stooq_symbol}: apikey required")
+                    continue
                 points = self._parse_stooq_points(response.text, period)
                 if points:
                     return points
@@ -278,7 +284,7 @@ class PriceChartTool:
         ax.text(
             0.5,
             0.38,
-            "Yahoo rate limit verebilir; yedek kaynak da boş döndü. Birkaç dakika sonra tekrar deneyebilirsiniz.",
+            "Yahoo rate limit verebilir; yedek kaynak icin STOOQ_API_KEY gerekebilir. Birkaç dakika sonra tekrar deneyebilirsiniz.",
             ha="center",
             va="center",
             fontsize=10,
@@ -346,3 +352,8 @@ def _stooq_symbols(requested_symbol: str) -> list[str]:
         "MSFT": ["msft.us"],
     }
     return stooq_symbols.get(normalized, [])
+
+
+def _stooq_requires_api_key(text: str) -> bool:
+    lowered = text.lower()
+    return "get your apikey" in lowered or ("apikey" in lowered and "captcha" in lowered)

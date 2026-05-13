@@ -391,7 +391,7 @@ def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:
     assert image.startswith(b"\x89PNG")
 
 
-def test_visual_generator_uses_deterministic_diagram_for_finance_concepts() -> None:
+def test_visual_generator_uses_imagen_first_for_finance_concepts() -> None:
     client = _RecordingImageClient()
     generator = EconomyVisualGenerator(
         Settings(
@@ -403,9 +403,10 @@ def test_visual_generator_uses_deterministic_diagram_for_finance_concepts() -> N
 
     image, caption = generator.generate("hisse bölünmesini görselle anlat")
 
-    assert image.startswith(b"\x89PNG")
-    assert caption == "Ekonomi semasi"
-    assert client.models.calls == []
+    assert image == b"imagen-bytes"
+    assert caption == "Ekonomi gorseli"
+    assert client.models.calls[0]["model"] == "imagen-4.0-ultra-generate-001"
+    assert "hisse bölünmesini" in client.models.calls[0]["prompt"]
 
 
 def test_visual_generator_uses_imagen_generate_images_for_creative_visuals() -> None:
@@ -588,6 +589,33 @@ def test_price_chart_tries_multiple_stooq_symbols_for_gold(monkeypatch) -> None:
 
     assert points[-1][1] == 111
     assert stooq_symbols == ["xauusd", "gc.c"]
+
+
+def test_price_chart_sends_stooq_api_key_when_configured(monkeypatch) -> None:
+    stooq_params: list[dict] = []
+
+    def fake_get(url, **kwargs):
+        if "finance.yahoo.com" in url:
+            return _FakeHttpResponse(429)
+        stooq_params.append(kwargs["params"])
+        return _FakeHttpResponse(
+            200,
+            text=(
+                "Date,Open,High,Low,Close,Volume\n"
+                "2026-05-01,100,110,99,105,0\n"
+                "2026-05-02,105,112,101,111,0\n"
+            ),
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("src.tools.charting.time.sleep", lambda _: None)
+
+    tool = PriceChartTool(Settings(stooq_api_key="stooq_test_key"))
+    points = tool._fetch_history("AMD", "3mo")
+
+    assert points[-1][1] == 111
+    assert stooq_params[0]["s"] == "amd.us"
+    assert stooq_params[0]["apikey"] == "stooq_test_key"
 
 
 def test_price_chart_returns_unavailable_image_when_all_providers_fail(monkeypatch) -> None:
