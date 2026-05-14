@@ -47,11 +47,17 @@ class EconomyVisualGenerator:
             "stil",
             "style",
             "bunu",
+            "koy",
+            "yerleştir",
+            "yerlestir",
+            "ekle",
+            "kapak",
         ]
         finance_style_markers = [
             "finans",
             "ekonomi",
             "ekonomist",
+            "ekonost",
             "borsa",
             "piyasa",
             "yatırım",
@@ -160,18 +166,9 @@ class EconomyVisualGenerator:
             "Prefer": "wait=60",
             "Cancel-After": "90s",
         }
-        payload = {
-            "input": {
-                "prompt": prompt,
-                "aspect_ratio": "16:9",
-                "resolution": "1 MP",
-                "output_format": "png",
-                "output_quality": 90,
-                "safety_tolerance": 2,
-            }
-        }
+        payload = {"input": _replicate_input_payload(model, prompt)}
         if reference_image:
-            payload["input"]["input_images"] = [_data_uri(reference_image, reference_mime_type)]
+            _attach_replicate_reference_image(payload["input"], model, reference_image, reference_mime_type)
         url = f"{self.replicate_api_base_url}/models/{owner}/{name}/predictions"
         try:
             response = requests.post(
@@ -286,11 +283,13 @@ class EconomyVisualGenerator:
 
     def _build_prompt(self, request_text: str, has_reference_image: bool = False) -> str:
         if has_reference_image:
+            magazine_context = _magazine_context_hint(request_text)
             return (
                 "Transform the supplied reference image according to the Turkish instruction. "
                 "Preserve the main subject identity, pose, and composition when possible. "
                 "Default to a realistic, photorealistic editorial magazine portrait unless the user explicitly asks for illustration, cartoon, icon, infographic, or diagram. "
                 "For finance/economics requests, make the person look like a professional economist or market analyst in a realistic finance magazine setting. "
+                f"{magazine_context}"
                 "Do not add fake price charts, fake financial numbers, logos, watermarks, or investment advice. "
                 "Keep the result clean, professional, and suitable for a finance education bot. "
                 f"Talimat: {request_text}"
@@ -444,6 +443,47 @@ def _split_replicate_model(model: str) -> tuple[str, str]:
     return owner, name
 
 
+def _replicate_input_payload(model: str, prompt: str) -> dict[str, Any]:
+    model_name = model.strip().lower()
+    if model_name == "google/nano-banana":
+        return {
+            "prompt": prompt,
+            "aspect_ratio": "match_input_image",
+            "output_format": "png",
+        }
+    if model_name == "google/imagen-4":
+        return {
+            "prompt": prompt,
+            "aspect_ratio": "16:9",
+            "safety_filter_level": "block_only_high",
+            "output_format": "png",
+        }
+    return {
+        "prompt": prompt,
+        "aspect_ratio": "16:9",
+        "resolution": "1 MP",
+        "output_format": "png",
+        "output_quality": 90,
+        "safety_tolerance": 2,
+    }
+
+
+def _attach_replicate_reference_image(
+    payload: dict[str, Any],
+    model: str,
+    image: bytes,
+    mime_type: str,
+) -> None:
+    model_name = model.strip().lower()
+    image_uri = _data_uri(image, mime_type)
+    if model_name == "google/nano-banana":
+        payload["image_input"] = [image_uri]
+    elif model_name == "google/imagen-4":
+        return
+    else:
+        payload["input_images"] = [image_uri]
+
+
 def _replicate_output_url(output: Any) -> str | None:
     if isinstance(output, str) and output.startswith(("http://", "https://")):
         return output
@@ -499,6 +539,18 @@ def _google_image_part(types: Any, image: bytes, mime_type: str) -> Any:
 def _data_uri(image: bytes, mime_type: str) -> str:
     encoded = base64.b64encode(image).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
+
+
+def _magazine_context_hint(request_text: str) -> str:
+    lowered = request_text.lower()
+    if any(marker in lowered for marker in ["dergi", "magazine", "kapak", "cover"]):
+        return (
+            "The final image should clearly look like a realistic finance/economics magazine cover or editorial page: "
+            "portrait subject placed in a polished magazine composition, business attire, studio/editorial lighting, "
+            "subtle finance office or publication background, and a clean masthead/title area such as 'EKONOMI'. "
+            "Avoid a plain office headshot if the user asks for a magazine context. "
+        )
+    return ""
 
 
 def _shorten(text: str, limit: int) -> str:

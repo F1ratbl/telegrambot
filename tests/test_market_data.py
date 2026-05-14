@@ -677,6 +677,27 @@ def test_visual_generator_accepts_finance_style_drawing_request_without_referenc
     assert request == "bu adamı finans dergisinde ekonomistmiş gibi çiz"
 
 
+def test_visual_generator_accepts_magazine_placement_request_without_reference() -> None:
+    generator = EconomyVisualGenerator(Settings())
+
+    request = generator.parse_request("birde bu adamı ekonomist dergisine koy")
+
+    assert request == "birde bu adamı ekonomist dergisine koy"
+
+
+def test_visual_generator_adds_magazine_context_for_reference_prompt() -> None:
+    generator = EconomyVisualGenerator(Settings())
+
+    prompt = generator._build_prompt(
+        "bu adamı ekonomist olarak finans dergisinde çiz, gerçekci görsel olsun",
+        has_reference_image=True,
+    )
+
+    assert "magazine cover or editorial page" in prompt
+    assert "Avoid a plain office headshot" in prompt
+    assert "EKONOMI" in prompt
+
+
 def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:
     generator = EconomyVisualGenerator(Settings(google_api_key="test"))
     generator._client = _FailingImageClient()
@@ -822,6 +843,48 @@ def test_visual_generator_sends_reference_image_to_replicate(monkeypatch) -> Non
     assert calls[0]["json"]["input"]["input_images"] == ["data:image/jpeg;base64,aW1hZ2UtYnl0ZXM="]
     assert "photorealistic editorial magazine portrait" in calls[0]["json"]["input"]["prompt"]
     assert "Talimat: bunu ekonomist olarak çiz" in calls[0]["json"]["input"]["prompt"]
+
+
+def test_visual_generator_uses_nano_banana_replicate_schema(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"method": "post", "url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            data={
+                "status": "succeeded",
+                "output": "https://replicate.delivery/example/nano-banana.png",
+            },
+        )
+
+    def fake_get(url, **kwargs):
+        calls.append({"method": "get", "url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            content=b"nano-banana-image",
+            headers={"content-type": "image/png"},
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.get", fake_get)
+    generator = EconomyVisualGenerator(
+        Settings(
+            replicate_api_token="r8_test",
+            replicate_image_model="google/nano-banana",
+            replicate_image_generation_enabled=True,
+        )
+    )
+
+    image, caption = generator.generate("ekonomist portresi çiz", reference_image=b"image-bytes")
+
+    assert image == b"nano-banana-image"
+    assert caption == "Ekonomi gorseli"
+    assert calls[0]["url"] == "https://api.replicate.com/v1/models/google/nano-banana/predictions"
+    assert calls[0]["json"]["input"]["aspect_ratio"] == "match_input_image"
+    assert calls[0]["json"]["input"]["output_format"] == "png"
+    assert calls[0]["json"]["input"]["image_input"] == ["data:image/jpeg;base64,aW1hZ2UtYnl0ZXM="]
+    assert "input_images" not in calls[0]["json"]["input"]
 
 
 def test_visual_generator_polls_replicate_when_sync_response_is_processing(monkeypatch) -> None:
