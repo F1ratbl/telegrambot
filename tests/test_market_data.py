@@ -282,6 +282,59 @@ class _FakeReferenceVisualGenerator:
         return b"edited-image-bytes", "Ekonomi gorseli"
 
 
+class _FakeContextVisualGenerator:
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+        self.context_image = b"previous-image"
+
+    def has_visual_context(self, chat_id: str | None) -> bool:
+        self.requests.append({"method": "has_context", "chat_id": chat_id})
+        return True
+
+    def is_visual_followup(self, text: str) -> bool:
+        self.requests.append({"method": "is_followup", "text": text})
+        return "olsun" in text.lower()
+
+    def parse_request(self, text: str, has_reference_image: bool = False, has_visual_context: bool = False):
+        self.requests.append(
+            {
+                "method": "parse",
+                "text": text,
+                "has_reference_image": has_reference_image,
+                "has_visual_context": has_visual_context,
+            }
+        )
+        return text if has_visual_context and "olsun" in text.lower() else None
+
+    def context_reference_image(self, chat_id: str | None):
+        self.requests.append({"method": "context_image", "chat_id": chat_id})
+        return self.context_image
+
+    def contextual_request(self, chat_id: str | None, request_text: str):
+        self.requests.append({"method": "contextual_request", "chat_id": chat_id, "text": request_text})
+        return f"onceki gorsel + {request_text}"
+
+    def generate(self, request_text: str, reference_image: bytes | None = None):
+        self.requests.append(
+            {
+                "method": "generate",
+                "text": request_text,
+                "reference_image": reference_image,
+            }
+        )
+        return b"continued-image", "Ekonomi gorseli"
+
+    def remember_visual_context(self, chat_id: str | None, request_text: str, image: bytes):
+        self.requests.append(
+            {
+                "method": "remember",
+                "chat_id": chat_id,
+                "text": request_text,
+                "image": image,
+            }
+        )
+
+
 class _FailingTTS:
     enabled = True
 
@@ -696,6 +749,47 @@ def test_visual_generator_adds_magazine_context_for_reference_prompt() -> None:
     assert "magazine cover or editorial page" in prompt
     assert "Avoid a plain office headshot" in prompt
     assert "EKONOMI" in prompt
+
+
+def test_webhook_visual_followup_continues_previous_image_context() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    visual_generator = _FakeContextVisualGenerator()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 14,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "takım kıyafeti kırmızı olsun",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        visual_generator=visual_generator,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert telegram.photos[0]["image"] == b"continued-image"
+    assert {
+        "method": "parse",
+        "text": "takım kıyafeti kırmızı olsun",
+        "has_reference_image": False,
+        "has_visual_context": True,
+    } in visual_generator.requests
+    assert {
+        "method": "generate",
+        "text": "onceki gorsel + takım kıyafeti kırmızı olsun",
+        "reference_image": b"previous-image",
+    } in visual_generator.requests
+    assert {
+        "method": "remember",
+        "chat_id": "123:456",
+        "text": "onceki gorsel + takım kıyafeti kırmızı olsun",
+        "image": b"continued-image",
+    } in visual_generator.requests
 
 
 def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:

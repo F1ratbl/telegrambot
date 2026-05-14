@@ -178,18 +178,26 @@ def _handle_visual_request(
     visual_generator: EconomyVisualGenerator,
 ) -> bool:
     photo_file_id = _largest_photo_file_id(message)
+    visual_chat_id = _memory_chat_id(message, chat_id)
+    has_visual_context = _has_visual_context(visual_generator, visual_chat_id)
     if photo_file_id:
-        visual_request = visual_generator.parse_request(text, has_reference_image=True)
+        visual_request = _parse_visual_request(visual_generator, text, has_reference_image=True)
     else:
-        visual_request = visual_generator.parse_request(text)
+        visual_request = _parse_visual_request(visual_generator, text, has_visual_context=has_visual_context)
     if visual_request is None:
         return False
     try:
         reference_image = telegram.download_file(photo_file_id) if photo_file_id else None
+        if reference_image is None and _is_visual_followup(visual_generator, text):
+            context_image = _context_reference_image(visual_generator, visual_chat_id)
+            if context_image is not None:
+                reference_image = context_image
+                visual_request = _contextual_visual_request(visual_generator, visual_chat_id, visual_request)
         if reference_image is None:
             image, caption = visual_generator.generate(visual_request)
         else:
             image, caption = visual_generator.generate(visual_request, reference_image=reference_image)
+        _remember_visual_context(visual_generator, visual_chat_id, visual_request, image)
         telegram.send_photo(
             chat_id=chat_id,
             image=image,
@@ -204,6 +212,62 @@ def _handle_visual_request(
             reply_to_message_id=message.get("message_id"),
         )
     return True
+
+
+def _parse_visual_request(
+    visual_generator: EconomyVisualGenerator,
+    text: str,
+    has_reference_image: bool = False,
+    has_visual_context: bool = False,
+) -> str | None:
+    try:
+        return visual_generator.parse_request(
+            text,
+            has_reference_image=has_reference_image,
+            has_visual_context=has_visual_context,
+        )
+    except TypeError:
+        if has_reference_image:
+            try:
+                return visual_generator.parse_request(text, has_reference_image=True)
+            except TypeError:
+                return visual_generator.parse_request(text)
+        return visual_generator.parse_request(text)
+
+
+def _has_visual_context(visual_generator: EconomyVisualGenerator, chat_id: str | None) -> bool:
+    checker = getattr(visual_generator, "has_visual_context", None)
+    return bool(checker(chat_id)) if callable(checker) else False
+
+
+def _is_visual_followup(visual_generator: EconomyVisualGenerator, text: str) -> bool:
+    checker = getattr(visual_generator, "is_visual_followup", None)
+    return bool(checker(text)) if callable(checker) else False
+
+
+def _context_reference_image(visual_generator: EconomyVisualGenerator, chat_id: str | None) -> bytes | None:
+    getter = getattr(visual_generator, "context_reference_image", None)
+    return getter(chat_id) if callable(getter) else None
+
+
+def _contextual_visual_request(
+    visual_generator: EconomyVisualGenerator,
+    chat_id: str | None,
+    request_text: str,
+) -> str:
+    builder = getattr(visual_generator, "contextual_request", None)
+    return builder(chat_id, request_text) if callable(builder) else request_text
+
+
+def _remember_visual_context(
+    visual_generator: EconomyVisualGenerator,
+    chat_id: str | None,
+    request_text: str,
+    image: bytes,
+) -> None:
+    remember = getattr(visual_generator, "remember_visual_context", None)
+    if callable(remember):
+        remember(chat_id, request_text, image)
 
 
 def _largest_photo_file_id(message: dict[str, Any]) -> str | None:

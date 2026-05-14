@@ -4,6 +4,7 @@ import base64
 from io import BytesIO
 import logging
 import re
+import time
 from typing import Any
 
 from src.config import Settings
@@ -22,8 +23,14 @@ class EconomyVisualGenerator:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._client = None
+        self._visual_contexts: dict[str, tuple[float, str, bytes]] = {}
 
-    def parse_request(self, text: str, has_reference_image: bool = False) -> str | None:
+    def parse_request(
+        self,
+        text: str,
+        has_reference_image: bool = False,
+        has_visual_context: bool = False,
+    ) -> str | None:
         lowered = text.lower()
         explicit_visual_markers = [
             "infografik",
@@ -71,11 +78,75 @@ class EconomyVisualGenerator:
             if any(marker in lowered for marker in transform_markers + finance_style_markers):
                 return text.strip()
             return None
+        if has_visual_context and self.is_visual_followup(text):
+            return text.strip()
         if any(marker in lowered for marker in transform_markers) and any(
             marker in lowered for marker in finance_style_markers
         ):
             return text.strip()
         return None
+
+    def is_visual_followup(self, text: str) -> bool:
+        lowered = text.lower()
+        followup_markers = [
+            "olsun",
+            "yap",
+            "değiştir",
+            "degistir",
+            "ekle",
+            "çıkar",
+            "cikar",
+            "kaldır",
+            "kaldir",
+            "koy",
+            "yerleştir",
+            "yerlestir",
+            "rengi",
+            "renk",
+            "kıyafet",
+            "kiyafet",
+            "takım",
+            "takim",
+            "arka plan",
+            "background",
+            "birde",
+            "bir de",
+        ]
+        return any(marker in lowered for marker in followup_markers)
+
+    def has_visual_context(self, chat_id: str | None) -> bool:
+        return self._context(chat_id) is not None
+
+    def context_reference_image(self, chat_id: str | None) -> bytes | None:
+        context = self._context(chat_id)
+        return context[2] if context else None
+
+    def contextual_request(self, chat_id: str | None, request_text: str) -> str:
+        context = self._context(chat_id)
+        if context is None:
+            return request_text
+        previous_request = context[1]
+        return (
+            f"Onceki gorsel talimati: {previous_request}\n"
+            f"Devam talimati: {request_text}\n"
+            "Onceki uretilen gorseli referans al ve sadece devam talimatindaki degisikligi uygula."
+        )
+
+    def remember_visual_context(self, chat_id: str | None, request_text: str, image: bytes) -> None:
+        if not chat_id or not image:
+            return
+        self._visual_contexts[chat_id] = (time.monotonic(), request_text, image)
+
+    def _context(self, chat_id: str | None) -> tuple[float, str, bytes] | None:
+        if not chat_id:
+            return None
+        context = self._visual_contexts.get(chat_id)
+        if context is None:
+            return None
+        if time.monotonic() - context[0] > 1800:
+            self._visual_contexts.pop(chat_id, None)
+            return None
+        return context
 
     def generate(
         self,
