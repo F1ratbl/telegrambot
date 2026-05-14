@@ -177,11 +177,19 @@ def _handle_visual_request(
     telegram: TelegramClient,
     visual_generator: EconomyVisualGenerator,
 ) -> bool:
-    visual_request = visual_generator.parse_request(text)
+    photo_file_id = _largest_photo_file_id(message)
+    if photo_file_id:
+        visual_request = visual_generator.parse_request(text, has_reference_image=True)
+    else:
+        visual_request = visual_generator.parse_request(text)
     if visual_request is None:
         return False
     try:
-        image, caption = visual_generator.generate(visual_request)
+        reference_image = telegram.download_file(photo_file_id) if photo_file_id else None
+        if reference_image is None:
+            image, caption = visual_generator.generate(visual_request)
+        else:
+            image, caption = visual_generator.generate(visual_request, reference_image=reference_image)
         telegram.send_photo(
             chat_id=chat_id,
             image=image,
@@ -196,6 +204,17 @@ def _handle_visual_request(
             reply_to_message_id=message.get("message_id"),
         )
     return True
+
+
+def _largest_photo_file_id(message: dict[str, Any]) -> str | None:
+    photos = message.get("photo") or []
+    if not isinstance(photos, list) or not photos:
+        return None
+    candidates = [photo for photo in photos if isinstance(photo, dict) and isinstance(photo.get("file_id"), str)]
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda photo: int(photo.get("file_size") or 0))
+    return best["file_id"]
 
 
 def _handle_voice_message(

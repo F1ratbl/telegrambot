@@ -23,7 +23,7 @@ class EconomyVisualGenerator:
         self.settings = settings
         self._client = None
 
-    def parse_request(self, text: str) -> str | None:
+    def parse_request(self, text: str, has_reference_image: bool = False) -> str | None:
         lowered = text.lower()
         markers = [
             "infografik",
@@ -36,21 +36,41 @@ class EconomyVisualGenerator:
             "resim oluştur",
             "resim olustur",
         ]
+        if has_reference_image:
+            markers.extend(
+                [
+                    "çiz",
+                    "ciz",
+                    "çevir",
+                    "cevir",
+                    "dönüştür",
+                    "donustur",
+                    "olarak",
+                    "stil",
+                    "style",
+                    "bunu",
+                ]
+            )
         if not any(marker in lowered for marker in markers):
             return None
         return text.strip()
 
-    def generate(self, request_text: str) -> tuple[bytes, str]:
+    def generate(
+        self,
+        request_text: str,
+        reference_image: bytes | None = None,
+        reference_mime_type: str = "image/jpeg",
+    ) -> tuple[bytes, str]:
         if not self.settings.image_enabled:
             return self._render_fallback_infographic(request_text), "Ekonomi semasi"
 
-        prompt = self._build_prompt(request_text)
+        prompt = self._build_prompt(request_text, has_reference_image=bool(reference_image))
         if self.settings.replicate_image_enabled:
-            image = self._generate_with_replicate(prompt)
+            image = self._generate_with_replicate(prompt, reference_image, reference_mime_type)
             if image:
                 return image, "Ekonomi gorseli"
 
-        if self.settings.huggingface_image_enabled:
+        if self.settings.huggingface_image_enabled and reference_image is None:
             image = self._generate_with_huggingface(prompt)
             if image:
                 return image, "Ekonomi gorseli"
@@ -65,7 +85,7 @@ class EconomyVisualGenerator:
             self._client = genai.Client(api_key=self.settings.google_api_key)
 
         try:
-            image = self._generate_with_google(prompt, types)
+            image = self._generate_with_google(prompt, types, reference_image, reference_mime_type)
             if image:
                 return image, "Ekonomi gorseli"
             logger.warning("Gemini image model returned no image; using fallback infographic.")
@@ -73,9 +93,15 @@ class EconomyVisualGenerator:
             logger.warning("Gemini image generation failed; using fallback infographic: %s", exc)
         return self._render_fallback_infographic(request_text), "Ekonomi semasi"
 
-    def _generate_with_google(self, prompt: str, types: Any) -> bytes | None:
+    def _generate_with_google(
+        self,
+        prompt: str,
+        types: Any,
+        reference_image: bytes | None = None,
+        reference_mime_type: str = "image/jpeg",
+    ) -> bytes | None:
         model = self.settings.gemini_image_model.strip()
-        if model.lower().startswith("imagen-"):
+        if model.lower().startswith("imagen-") and reference_image is None:
             response = self._client.models.generate_images(
                 model=model,
                 prompt=prompt,
@@ -87,14 +113,23 @@ class EconomyVisualGenerator:
             )
             return self._extract_image_bytes(response)
 
+        contents: list[Any] = [prompt]
+        if reference_image:
+            contents.append(_google_image_part(types, reference_image, reference_mime_type))
+
         response = self._client.models.generate_content(
             model=model,
-            contents=[prompt],
+            contents=contents,
             config=types.GenerateContentConfig(response_modalities=["Image"]),
         )
         return self._extract_image_bytes(response)
 
-    def _generate_with_replicate(self, prompt: str) -> bytes | None:
+    def _generate_with_replicate(
+        self,
+        prompt: str,
+        reference_image: bytes | None = None,
+        reference_mime_type: str = "image/jpeg",
+    ) -> bytes | None:
         import requests
 
         model = self.settings.replicate_image_model.strip()
@@ -119,6 +154,8 @@ class EconomyVisualGenerator:
                 "safety_tolerance": 2,
             }
         }
+        if reference_image:
+            payload["input"]["input_image"] = _data_uri(reference_image, reference_mime_type)
         url = f"{self.replicate_api_base_url}/models/{owner}/{name}/predictions"
         try:
             response = requests.post(
@@ -231,7 +268,16 @@ class EconomyVisualGenerator:
                 logger.warning("Hugging Face image generation failed at %s; trying next fallback: %s", url, exc)
         return None
 
-    def _build_prompt(self, request_text: str) -> str:
+    def _build_prompt(self, request_text: str, has_reference_image: bool = False) -> str:
+        if has_reference_image:
+            return (
+                "Transform the supplied reference image according to the Turkish instruction. "
+                "Preserve the main subject identity, pose, and composition when possible. "
+                "Apply an economics/finance/editorial illustration style only if requested. "
+                "Do not add fake price charts, fake financial numbers, logos, watermarks, or investment advice. "
+                "Keep the result clean, professional, and suitable for a finance education bot. "
+                f"Talimat: {request_text}"
+            )
         return (
             "Create a clean Turkish finance education illustration. Avoid fake numbers, fake maps, "
             "fake price charts, random flags, random labels, tiny unreadable text, and investment advice. "
@@ -423,6 +469,19 @@ def _extract_from_parts(parts: list[Any]) -> bytes | None:
         image.save(output, format="PNG")
         return output.getvalue()
     return None
+
+
+def _google_image_part(types: Any, image: bytes, mime_type: str) -> Any:
+    part = getattr(types, "Part", None)
+    from_bytes = getattr(part, "from_bytes", None)
+    if callable(from_bytes):
+        return from_bytes(data=image, mime_type=mime_type)
+    return image
+
+
+def _data_uri(image: bytes, mime_type: str) -> str:
+    encoded = base64.b64encode(image).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
 
 
 def _shorten(text: str, limit: int) -> str:

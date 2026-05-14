@@ -263,6 +263,25 @@ class _FakeVisualGenerator:
         return b"visual-bytes", "Ekonomi gorseli"
 
 
+class _FakeReferenceVisualGenerator:
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+
+    def parse_request(self, text: str, has_reference_image: bool = False):
+        self.requests.append({"method": "parse", "text": text, "has_reference_image": has_reference_image})
+        return text if has_reference_image and "çiz" in text.lower() else None
+
+    def generate(self, request_text: str, reference_image: bytes | None = None):
+        self.requests.append(
+            {
+                "method": "generate",
+                "text": request_text,
+                "reference_image": reference_image,
+            }
+        )
+        return b"edited-image-bytes", "Ekonomi gorseli"
+
+
 class _FailingTTS:
     enabled = True
 
@@ -573,6 +592,47 @@ def test_webhook_visual_request_returns_photo_without_agent() -> None:
     assert telegram.photos[0]["caption"] == "Ekonomi gorseli"
 
 
+def test_webhook_visual_request_can_use_uploaded_photo_as_reference() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    visual_generator = _FakeReferenceVisualGenerator()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 12,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "caption": "bunu ekonomist olarak çiz",
+                "photo": [
+                    {"file_id": "small-photo", "file_size": 100},
+                    {"file_id": "large-photo", "file_size": 1000},
+                ],
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        visual_generator=visual_generator,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert telegram.downloaded_file_ids == ["large-photo"]
+    assert visual_generator.requests == [
+        {
+            "method": "parse",
+            "text": "bunu ekonomist olarak çiz",
+            "has_reference_image": True,
+        },
+        {
+            "method": "generate",
+            "text": "bunu ekonomist olarak çiz",
+            "reference_image": b"voice-bytes",
+        },
+    ]
+    assert telegram.photos[0]["image"] == b"edited-image-bytes"
+
+
 def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:
     generator = EconomyVisualGenerator(Settings(google_api_key="test"))
     generator._client = _FailingImageClient()
@@ -678,6 +738,45 @@ def test_visual_generator_uses_replicate_when_enabled(monkeypatch) -> None:
     assert calls[0]["json"]["input"]["aspect_ratio"] == "16:9"
     assert calls[0]["json"]["input"]["output_format"] == "png"
     assert calls[1]["url"] == "https://replicate.delivery/example/output.png"
+
+
+def test_visual_generator_sends_reference_image_to_replicate(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"method": "post", "url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            data={
+                "status": "succeeded",
+                "output": "https://replicate.delivery/example/edited.png",
+            },
+        )
+
+    def fake_get(url, **kwargs):
+        calls.append({"method": "get", "url": url, **kwargs})
+        return _FakeHttpResponse(
+            200,
+            content=b"replicate-edited-image",
+            headers={"content-type": "image/png"},
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.get", fake_get)
+    generator = EconomyVisualGenerator(
+        Settings(
+            replicate_api_token="r8_test",
+            replicate_image_generation_enabled=True,
+        )
+    )
+
+    assert generator.parse_request("bunu ekonomist olarak çiz", has_reference_image=True) == "bunu ekonomist olarak çiz"
+    image, caption = generator.generate("bunu ekonomist olarak çiz", reference_image=b"image-bytes")
+
+    assert image == b"replicate-edited-image"
+    assert caption == "Ekonomi gorseli"
+    assert calls[0]["json"]["input"]["input_image"] == "data:image/jpeg;base64,aW1hZ2UtYnl0ZXM="
+    assert "Talimat: bunu ekonomist olarak çiz" in calls[0]["json"]["input"]["prompt"]
 
 
 def test_visual_generator_polls_replicate_when_sync_response_is_processing(monkeypatch) -> None:
