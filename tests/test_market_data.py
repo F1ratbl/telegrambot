@@ -819,7 +819,8 @@ def test_visual_generator_sends_reference_image_to_replicate(monkeypatch) -> Non
 
     assert image == b"replicate-edited-image"
     assert caption == "Ekonomi gorseli"
-    assert calls[0]["json"]["input"]["input_image"] == "data:image/jpeg;base64,aW1hZ2UtYnl0ZXM="
+    assert calls[0]["json"]["input"]["input_images"] == ["data:image/jpeg;base64,aW1hZ2UtYnl0ZXM="]
+    assert "photorealistic editorial magazine portrait" in calls[0]["json"]["input"]["prompt"]
     assert "Talimat: bunu ekonomist olarak çiz" in calls[0]["json"]["input"]["prompt"]
 
 

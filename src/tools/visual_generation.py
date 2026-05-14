@@ -171,7 +171,7 @@ class EconomyVisualGenerator:
             }
         }
         if reference_image:
-            payload["input"]["input_image"] = _data_uri(reference_image, reference_mime_type)
+            payload["input"]["input_images"] = [_data_uri(reference_image, reference_mime_type)]
         url = f"{self.replicate_api_base_url}/models/{owner}/{name}/predictions"
         try:
             response = requests.post(
@@ -289,7 +289,8 @@ class EconomyVisualGenerator:
             return (
                 "Transform the supplied reference image according to the Turkish instruction. "
                 "Preserve the main subject identity, pose, and composition when possible. "
-                "Apply an economics/finance/editorial illustration style only if requested. "
+                "Default to a realistic, photorealistic editorial magazine portrait unless the user explicitly asks for illustration, cartoon, icon, infographic, or diagram. "
+                "For finance/economics requests, make the person look like a professional economist or market analyst in a realistic finance magazine setting. "
                 "Do not add fake price charts, fake financial numbers, logos, watermarks, or investment advice. "
                 "Keep the result clean, professional, and suitable for a finance education bot. "
                 f"Talimat: {request_text}"
