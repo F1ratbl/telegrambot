@@ -633,6 +633,50 @@ def test_webhook_visual_request_can_use_uploaded_photo_as_reference() -> None:
     assert telegram.photos[0]["image"] == b"edited-image-bytes"
 
 
+def test_webhook_visual_request_can_use_replied_photo_as_reference() -> None:
+    agent = _FakeAgent()
+    telegram = _FakeTelegram()
+    visual_generator = _FakeReferenceVisualGenerator()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 13,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "bu adamı finans dergisinde ekonomistmiş gibi çiz",
+                "reply_to_message": {
+                    "photo": [
+                        {"file_id": "reply-small-photo", "file_size": 100},
+                        {"file_id": "reply-large-photo", "file_size": 1000},
+                    ]
+                },
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        visual_generator=visual_generator,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert telegram.downloaded_file_ids == ["reply-large-photo"]
+    assert visual_generator.requests[0] == {
+        "method": "parse",
+        "text": "bu adamı finans dergisinde ekonomistmiş gibi çiz",
+        "has_reference_image": True,
+    }
+    assert telegram.photos[0]["image"] == b"edited-image-bytes"
+
+
+def test_visual_generator_accepts_finance_style_drawing_request_without_reference() -> None:
+    generator = EconomyVisualGenerator(Settings())
+
+    request = generator.parse_request("bu adamı finans dergisinde ekonomistmiş gibi çiz")
+
+    assert request == "bu adamı finans dergisinde ekonomistmiş gibi çiz"
+
+
 def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:
     generator = EconomyVisualGenerator(Settings(google_api_key="test"))
     generator._client = _FailingImageClient()

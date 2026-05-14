@@ -207,6 +207,16 @@ def _handle_visual_request(
 
 
 def _largest_photo_file_id(message: dict[str, Any]) -> str | None:
+    direct_photo = _photo_file_id_from_message(message)
+    if direct_photo:
+        return direct_photo
+    reply_to_message = message.get("reply_to_message")
+    if isinstance(reply_to_message, dict):
+        return _photo_file_id_from_message(reply_to_message)
+    return None
+
+
+def _photo_file_id_from_message(message: dict[str, Any]) -> str | None:
     photos = message.get("photo") or []
     if not isinstance(photos, list) or not photos:
         return None

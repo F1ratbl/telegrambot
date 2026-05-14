@@ -25,7 +25,7 @@ class EconomyVisualGenerator:
 
     def parse_request(self, text: str, has_reference_image: bool = False) -> str | None:
         lowered = text.lower()
-        markers = [
+        explicit_visual_markers = [
             "infografik",
             "görsel",
             "gorsel",
@@ -36,24 +36,40 @@ class EconomyVisualGenerator:
             "resim oluştur",
             "resim olustur",
         ]
+        transform_markers = [
+            "çiz",
+            "ciz",
+            "çevir",
+            "cevir",
+            "dönüştür",
+            "donustur",
+            "olarak",
+            "stil",
+            "style",
+            "bunu",
+        ]
+        finance_style_markers = [
+            "finans",
+            "ekonomi",
+            "ekonomist",
+            "borsa",
+            "piyasa",
+            "yatırım",
+            "yatirim",
+            "analist",
+            "dergi",
+        ]
+        if any(marker in lowered for marker in explicit_visual_markers):
+            return text.strip()
         if has_reference_image:
-            markers.extend(
-                [
-                    "çiz",
-                    "ciz",
-                    "çevir",
-                    "cevir",
-                    "dönüştür",
-                    "donustur",
-                    "olarak",
-                    "stil",
-                    "style",
-                    "bunu",
-                ]
-            )
-        if not any(marker in lowered for marker in markers):
+            if any(marker in lowered for marker in transform_markers + finance_style_markers):
+                return text.strip()
             return None
-        return text.strip()
+        if any(marker in lowered for marker in transform_markers) and any(
+            marker in lowered for marker in finance_style_markers
+        ):
+            return text.strip()
+        return None
 
     def generate(
         self,
