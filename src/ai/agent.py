@@ -172,6 +172,93 @@ class EconomyAgent:
             logger.exception("Gemini chart request interpretation failed.")
             return None
 
+    def interpret_media_request(
+        self,
+        user_message: str,
+        chat_id: str | None = None,
+        has_reference_image: bool = False,
+        has_visual_context: bool = False,
+    ) -> dict[str, Any] | None:
+        if not user_message.strip() or not self.settings.google_api_key:
+            return None
+
+        try:
+            from google import genai
+            from google.genai import types
+
+            if self._client is None:
+                self._client = genai.Client(api_key=self.settings.google_api_key)
+
+            response = self._generate_content_with_retry(
+                model=self.settings.gemini_model,
+                contents=[
+                    self._media_interpretation_prompt(
+                        user_message=user_message,
+                        chat_id=chat_id,
+                        has_reference_image=has_reference_image,
+                        has_visual_context=has_visual_context,
+                    )
+                ],
+                config=self._build_media_interpretation_config(types),
+            )
+            return self._parse_media_interpretation(self._extract_text_or_none(response))
+        except Exception:
+            logger.exception("Gemini media request interpretation failed.")
+            return None
+
+    def _media_interpretation_prompt(
+        self,
+        user_message: str,
+        chat_id: str | None,
+        has_reference_image: bool,
+        has_visual_context: bool,
+    ) -> str:
+        active_asset = self._infer_active_asset(chat_id, user_message)
+        lines = [
+            "Kullanici mesajini analiz et ve yalnizca JSON dondur.",
+            'intent yalnizca su degerlerden biri olsun: "price_chart", "visual", "visual_edit", "none".',
+            "Hazir komut kalibi veya kelime listesi varsayma; kullanicinin dogal niyetini yorumla.",
+            "price_chart: Kullanici finansal varlik icin fiyat grafigi, mum grafigi, tarihsel performans grafigi veya chart istiyorsa.",
+            "visual: Kullanici yeni bir gorsel, infografik, sema, ilustrasyon, kapak veya dergi/editorial gorseli istiyorsa.",
+            "visual_edit: Kullanici yuklenen ya da once uretilen gorselde renk, kiyafet, nesne, arka plan, stil veya kompozisyon degisikligi istiyorsa.",
+            "none: Normal soru, haber yorumu, fiyat sorusu, sohbet veya gorsel/grafik uretimi istemeyen mesaj.",
+            "Kavramsal infografik/sema istegini price_chart yapma; gercek fiyat verisi grafigi istenmedikce visual sec.",
+            "Gorsel baglami varsa kisa talimatlari da yorumla: 'kravati pembe yap', 'takimi kirmizi olsun', 'arka plani degistir' -> visual_edit.",
+            "price_chart icin symbol standart kisa kod olsun: AMD, NVDA, AAPL, TSLA, MSFT, SP500, NASDAQ, DAX, BIST100, GOLD, SILVER, BRENT, BTCUSD, ETHUSD, USDTRY, EURTRY.",
+            "range_days kullanici acikca gun araligi verirse sayi olsun; yoksa null.",
+            "interval_hours kullanici mum/veri araligi verirse saat sayisi olsun; yoksa null.",
+            "period range_days yoksa 7d, 1mo, 3mo, 6mo veya 1y degerlerinden biri olsun. Emin degilsen 1mo.",
+            "visual ve visual_edit icin request_text kullanicinin istegini uygulanabilir tek talimat olarak yaz; bos birakma.",
+            "visual_edit icin use_reference_image true olsun.",
+            (
+                'JSON bicimi: {"intent":"price_chart","symbol":"AMD","range_days":4,'
+                '"interval_hours":4,"period":"7d","request_text":null,"use_reference_image":false}'
+            ),
+        ]
+        if active_asset:
+            lines.append(f"Aktif varlik baglami: {active_asset}")
+        lines.append(f"Yuklenen/cevaplanan gorsel var: {str(has_reference_image).lower()}")
+        lines.append(f"Once uretilmis gorsel baglami var: {str(has_visual_context).lower()}")
+        lines.append(f"Kullanici mesaji: {user_message}")
+        return "\n".join(lines)
+
+    def _build_media_interpretation_config(self, types: Any) -> Any:
+        kwargs: dict[str, Any] = {
+            "system_instruction": "Finans botunda gorsel, gorsel duzenleme ve fiyat grafigi niyetlerini JSON'a ceviren bir yorumlayicisin.",
+            "max_output_tokens": 450,
+            "response_mime_type": "application/json",
+        }
+        if self.settings.gemini_temperature is not None:
+            kwargs["temperature"] = 0
+        try:
+            return types.GenerateContentConfig(**kwargs)
+        except TypeError:
+            kwargs.pop("response_mime_type", None)
+            return types.GenerateContentConfig(**kwargs)
+
+    def _parse_media_interpretation(self, text: str | None) -> dict[str, Any] | None:
+        return self._parse_json_interpretation(text, "media")
+
     def _chart_interpretation_prompt(self, user_message: str, chat_id: str | None) -> str:
         active_asset = self._infer_active_asset(chat_id, user_message)
         lines = [
@@ -205,6 +292,9 @@ class EconomyAgent:
             return types.GenerateContentConfig(**kwargs)
 
     def _parse_chart_interpretation(self, text: str | None) -> dict[str, Any] | None:
+        return self._parse_json_interpretation(text, "chart")
+
+    def _parse_json_interpretation(self, text: str | None, label: str) -> dict[str, Any] | None:
         if not text:
             return None
         cleaned = text.strip()
@@ -214,7 +304,7 @@ class EconomyAgent:
         try:
             payload = json.loads(cleaned)
         except json.JSONDecodeError:
-            logger.warning("Gemini chart interpretation returned invalid JSON: %s", cleaned[:300])
+            logger.warning("Gemini %s interpretation returned invalid JSON: %s", label, cleaned[:300])
             return None
         return payload if isinstance(payload, dict) else None
 

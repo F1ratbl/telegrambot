@@ -255,6 +255,30 @@ class _FakeChartInterpreterAgent(_FakeAgent):
         return self.payload
 
 
+class _FakeMediaInterpreterAgent(_FakeAgent):
+    def __init__(self, payload: dict | None) -> None:
+        super().__init__()
+        self.payload = payload
+        self.media_requests: list[dict] = []
+
+    def interpret_media_request(
+        self,
+        user_message: str,
+        chat_id: str | None = None,
+        has_reference_image: bool = False,
+        has_visual_context: bool = False,
+    ):
+        self.media_requests.append(
+            {
+                "message": user_message,
+                "chat_id": chat_id,
+                "has_reference_image": has_reference_image,
+                "has_visual_context": has_visual_context,
+            }
+        )
+        return self.payload
+
+
 class _FakeVisualGenerator:
     def parse_request(self, text: str):
         return text if "infografik" in text.lower() else None
@@ -527,6 +551,72 @@ def test_webhook_chart_request_can_be_interpreted_by_model() -> None:
     assert telegram.photos[0]["image"] == b"model-chart-bytes"
 
 
+def test_webhook_media_interpreter_can_route_price_chart_without_marker_parse() -> None:
+    agent = _FakeMediaInterpreterAgent(
+        {
+            "intent": "price_chart",
+            "symbol": "AMD",
+            "range_days": 4,
+            "interval_hours": 4,
+            "period": "7d",
+        }
+    )
+    telegram = _FakeTelegram()
+    chart_tool = _ModelOnlyChartTool()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 15,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "amd nin son dört güne bakan dört saatlik mumlarını atar mısın",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        price_chart=chart_tool,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert agent.media_requests == [
+        {
+            "message": "amd nin son dört güne bakan dört saatlik mumlarını atar mısın",
+            "chat_id": "123:456",
+            "has_reference_image": False,
+            "has_visual_context": False,
+        }
+    ]
+    assert chart_tool.parsed_texts == []
+    assert chart_tool.created_requests == [ChartRequest("AMD", "7d", custom_days=4, interval_hours=4)]
+    assert telegram.photos[0]["image"] == b"model-chart-bytes"
+
+
+def test_webhook_media_interpreter_none_prevents_legacy_marker_catch() -> None:
+    agent = _FakeMediaInterpreterAgent({"intent": "none"})
+    telegram = _FakeTelegram()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 16,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "altin son 1 ay grafik çiz",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        price_chart=_FakeChartTool(),  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert telegram.photos == []
+    assert agent.messages == ["altin son 1 ay grafik çiz"]
+    assert telegram.messages[0]["text"] == "cevap: altin son 1 ay grafik çiz"
+
+
 def test_price_chart_builds_request_from_model_interpretation() -> None:
     tool = PriceChartTool(Settings())
 
@@ -790,6 +880,50 @@ def test_webhook_visual_followup_continues_previous_image_context() -> None:
         "text": "onceki gorsel + takım kıyafeti kırmızı olsun",
         "image": b"continued-image",
     } in visual_generator.requests
+
+
+def test_webhook_media_interpreter_visual_edit_uses_previous_image_context() -> None:
+    agent = _FakeMediaInterpreterAgent(
+        {
+            "intent": "visual_edit",
+            "request_text": "görseldeki kravatı pembe yap",
+            "use_reference_image": True,
+        }
+    )
+    telegram = _FakeTelegram()
+    visual_generator = _FakeContextVisualGenerator()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 17,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "görseldeki kravatı pembe yap",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        visual_generator=visual_generator,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert agent.media_requests == [
+        {
+            "message": "görseldeki kravatı pembe yap",
+            "chat_id": "123:456",
+            "has_reference_image": False,
+            "has_visual_context": True,
+        }
+    ]
+    assert {
+        "method": "generate",
+        "text": "onceki gorsel + görseldeki kravatı pembe yap",
+        "reference_image": b"previous-image",
+    } in visual_generator.requests
+    assert not any(request.get("method") == "parse" for request in visual_generator.requests)
+    assert telegram.photos[0]["image"] == b"continued-image"
 
 
 def test_visual_generator_falls_back_when_gemini_image_quota_fails() -> None:

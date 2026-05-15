@@ -129,7 +129,8 @@ class EconomyVisualGenerator:
         return (
             f"Onceki gorsel talimati: {previous_request}\n"
             f"Devam talimati: {request_text}\n"
-            "Onceki uretilen gorseli referans al ve sadece devam talimatindaki degisikligi uygula."
+            "Onceki uretilen gorseli referans al; sadece devam talimatindaki degisikligi uygula, "
+            "kimlik, poz, kompozisyon ve diger detaylari mumkun oldugunca koru."
         )
 
     def remember_visual_context(self, chat_id: str | None, request_text: str, image: bytes) -> None:
@@ -358,6 +359,7 @@ class EconomyVisualGenerator:
             return (
                 "Transform the supplied reference image according to the Turkish instruction. "
                 "Preserve the main subject identity, pose, and composition when possible. "
+                "If the instruction asks for a color or clothing change, apply that exact edit and leave unrelated details unchanged. "
                 "Default to a realistic, photorealistic editorial magazine portrait unless the user explicitly asks for illustration, cartoon, icon, infographic, or diagram. "
                 "For finance/economics requests, make the person look like a professional economist or market analyst in a realistic finance magazine setting. "
                 f"{magazine_context}"

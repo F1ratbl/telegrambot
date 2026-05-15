@@ -14,6 +14,7 @@ from src.tools.visual_generation import EconomyVisualGenerator
 
 
 logger = logging.getLogger(__name__)
+_MEDIA_INTERPRETATION_UNAVAILABLE = object()
 
 
 def create_telegram_blueprint(
@@ -100,11 +101,28 @@ def _handle_update(
     if not isinstance(text, str) or not text.strip():
         return False
 
-    if price_chart and _handle_price_chart_request(text, message, chat_id, telegram, price_chart, agent):
-        return True
+    media_payload = (
+        _interpret_media_request(agent, text, message, chat_id, visual_generator)
+        if price_chart or visual_generator
+        else _MEDIA_INTERPRETATION_UNAVAILABLE
+    )
+    if media_payload is not _MEDIA_INTERPRETATION_UNAVAILABLE:
+        if isinstance(media_payload, dict) and _handle_interpreted_media_request(
+            media_payload,
+            text,
+            message,
+            chat_id,
+            telegram,
+            price_chart,
+            visual_generator,
+        ):
+            return True
+    else:
+        if price_chart and _handle_price_chart_request(text, message, chat_id, telegram, price_chart, agent):
+            return True
 
-    if visual_generator and _handle_visual_request(text, message, chat_id, telegram, visual_generator):
-        return True
+        if visual_generator and _handle_visual_request(text, message, chat_id, telegram, visual_generator):
+            return True
 
     reply = agent.reply(
         user_message=text,
@@ -131,6 +149,16 @@ def _handle_price_chart_request(
         chart_request = price_chart.parse_request(text)
     if chart_request is None:
         return False
+    return _send_price_chart(chart_request, message, chat_id, telegram, price_chart)
+
+
+def _send_price_chart(
+    chart_request: ChartRequest,
+    message: dict[str, Any],
+    chat_id: int | str,
+    telegram: TelegramClient,
+    price_chart: PriceChartTool,
+) -> bool:
     try:
         image, caption = price_chart.create_price_chart(chart_request)
         telegram.send_photo(
@@ -147,6 +175,102 @@ def _handle_price_chart_request(
             reply_to_message_id=message.get("message_id"),
         )
     return True
+
+
+def _interpret_media_request(
+    agent: EconomyAgent,
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+    visual_generator: EconomyVisualGenerator | None,
+) -> dict[str, Any] | object | None:
+    interpreter = getattr(agent, "interpret_media_request", None)
+    if not callable(interpreter):
+        return _MEDIA_INTERPRETATION_UNAVAILABLE
+
+    settings = getattr(agent, "settings", None)
+    if settings is not None and not getattr(settings, "google_api_key", None):
+        return _MEDIA_INTERPRETATION_UNAVAILABLE
+
+    visual_chat_id = _memory_chat_id(message, chat_id)
+    try:
+        return interpreter(
+            user_message=text,
+            chat_id=visual_chat_id,
+            has_reference_image=bool(_largest_photo_file_id(message)),
+            has_visual_context=_has_visual_context(visual_generator, visual_chat_id) if visual_generator else False,
+        )
+    except TypeError:
+        try:
+            return interpreter(user_message=text, chat_id=visual_chat_id)
+        except Exception:
+            logger.exception("Failed to interpret media request.")
+            return None
+    except Exception:
+        logger.exception("Failed to interpret media request.")
+        return None
+
+
+def _handle_interpreted_media_request(
+    payload: dict[str, Any],
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+    telegram: TelegramClient,
+    price_chart: PriceChartTool | None,
+    visual_generator: EconomyVisualGenerator | None,
+) -> bool:
+    intent = _media_intent(payload)
+    if intent == "price_chart":
+        if price_chart is None:
+            return False
+        chart_payload = dict(payload)
+        chart_payload["is_chart_request"] = True
+        chart_request = price_chart.request_from_interpretation(chart_payload)
+        if chart_request is None:
+            return False
+        return _send_price_chart(chart_request, message, chat_id, telegram, price_chart)
+
+    if intent in {"visual", "visual_edit"}:
+        if visual_generator is None:
+            return False
+        visual_request = _visual_request_from_interpretation(payload, text)
+        return _handle_visual_request(
+            text,
+            message,
+            chat_id,
+            telegram,
+            visual_generator,
+            visual_request=visual_request,
+            force_reference_image=intent == "visual_edit" or bool(payload.get("use_reference_image")),
+        )
+
+    return False
+
+
+def _media_intent(payload: dict[str, Any]) -> str:
+    intent = payload.get("intent") or payload.get("type") or payload.get("action")
+    if not isinstance(intent, str):
+        return "none"
+    normalized = intent.strip().lower().replace("-", "_")
+    aliases = {
+        "chart": "price_chart",
+        "graph": "price_chart",
+        "image": "visual",
+        "image_generation": "visual",
+        "generate_image": "visual",
+        "create_image": "visual",
+        "image_edit": "visual_edit",
+        "edit_image": "visual_edit",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _visual_request_from_interpretation(payload: dict[str, Any], fallback_text: str) -> str:
+    request_text = payload.get("request_text") or payload.get("prompt") or payload.get("instruction")
+    if isinstance(request_text, str) and request_text.strip():
+        return request_text.strip()
+    return fallback_text.strip()
 
 
 def _interpret_chart_request(
@@ -176,23 +300,33 @@ def _handle_visual_request(
     chat_id: int | str,
     telegram: TelegramClient,
     visual_generator: EconomyVisualGenerator,
+    visual_request: str | None = None,
+    force_reference_image: bool = False,
 ) -> bool:
     photo_file_id = _largest_photo_file_id(message)
     visual_chat_id = _memory_chat_id(message, chat_id)
     has_visual_context = _has_visual_context(visual_generator, visual_chat_id)
-    if photo_file_id:
-        visual_request = _parse_visual_request(visual_generator, text, has_reference_image=True)
-    else:
-        visual_request = _parse_visual_request(visual_generator, text, has_visual_context=has_visual_context)
+    if visual_request is None:
+        if photo_file_id:
+            visual_request = _parse_visual_request(visual_generator, text, has_reference_image=True)
+        else:
+            visual_request = _parse_visual_request(visual_generator, text, has_visual_context=has_visual_context)
     if visual_request is None:
         return False
     try:
         reference_image = telegram.download_file(photo_file_id) if photo_file_id else None
-        if reference_image is None and _is_visual_followup(visual_generator, text):
+        if reference_image is None and (force_reference_image or _is_visual_followup(visual_generator, text)):
             context_image = _context_reference_image(visual_generator, visual_chat_id)
             if context_image is not None:
                 reference_image = context_image
                 visual_request = _contextual_visual_request(visual_generator, visual_chat_id, visual_request)
+            elif force_reference_image:
+                telegram.send_message(
+                    chat_id=chat_id,
+                    text="Düzenlenecek görseli bulamadım. Görseli yanıtlayarak ya da yeniden yükleyerek gönderebilir misin?",
+                    reply_to_message_id=message.get("message_id"),
+                )
+                return True
         if reference_image is None:
             image, caption = visual_generator.generate(visual_request)
         else:
