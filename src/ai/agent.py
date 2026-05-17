@@ -1178,6 +1178,22 @@ class EconomyAgent:
             "full_name": full_name,
         }
 
+    def subscribe_newsletter(
+        self,
+        full_name: str,
+        email: str,
+        consent_text: str = "",
+        chat_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._subscribe_newsletter(
+            {
+                "full_name": full_name,
+                "email": email,
+                "consent_text": consent_text,
+            },
+            chat_id=chat_id,
+        )
+
     def _function_response_part(self, types: Any, function_call: Any, result: dict[str, Any]) -> Any:
         kwargs: dict[str, Any] = {
             "name": function_call.name,

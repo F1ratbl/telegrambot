@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from flask import Blueprint, jsonify, request
@@ -102,6 +103,9 @@ def _handle_update(
     if not isinstance(text, str) or not text.strip():
         return False
 
+    if _handle_newsletter_signup_request(text, message, chat_id, telegram, agent):
+        return True
+
     media_payload = _media_interpretation_payload(agent, text, message, chat_id, price_chart, visual_generator)
     if media_payload is _MEDIA_INTERPRETATION_UNAVAILABLE:
         if _handle_legacy_media_request(text, message, chat_id, telegram, price_chart, visual_generator, agent):
@@ -131,6 +135,109 @@ def _handle_update(
         reply_to_message_id=message.get("message_id"),
     )
     return True
+
+
+def _handle_newsletter_signup_request(
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+    telegram: TelegramClient,
+    agent: EconomyAgent,
+) -> bool:
+    memory_chat_id = _memory_chat_id(message, chat_id)
+    is_signup_start = _is_newsletter_signup_message(text)
+    is_signup_followup = _is_newsletter_followup(agent, memory_chat_id)
+    if not is_signup_start and not is_signup_followup:
+        return False
+
+    email = _extract_email(text)
+    full_name = _extract_newsletter_name(text, email)
+    if not email or not full_name:
+        reply = "Harika! Bültenimize kaydolmak için tam adınızı ve e-posta adresinizi alabilir miyim?"
+        telegram.send_message(
+            chat_id=chat_id,
+            text=reply,
+            reply_to_message_id=message.get("message_id"),
+        )
+        _remember_agent_exchange(agent, memory_chat_id, text, reply)
+        return True
+
+    subscriber = getattr(agent, "subscribe_newsletter", None)
+    if not callable(subscriber):
+        return False
+    result = subscriber(
+        full_name=full_name,
+        email=email,
+        consent_text=text,
+        chat_id=memory_chat_id,
+    )
+    status = result.get("status") if isinstance(result, dict) else None
+    if status == "ok":
+        first_name = full_name.split()[0]
+        reply = f"Harika {first_name}, bültenimize hoş geldin! Kaydın tamamlandı."
+    elif status == "not_configured":
+        reply = "Bülten kaydını şu an tamamlayamıyorum; Zapier webhook ayarı production ortamında eksik görünüyor."
+    elif status == "missing_fields":
+        reply = "Kaydı tamamlamak için tam adınızı ve geçerli e-posta adresinizi birlikte paylaşır mısınız?"
+    else:
+        reply = "Bülten kaydını Zapier'e gönderirken bir sorun oldu. Biraz sonra tekrar deneyebilir misiniz?"
+    telegram.send_message(
+        chat_id=chat_id,
+        text=reply,
+        reply_to_message_id=message.get("message_id"),
+    )
+    _remember_agent_exchange(agent, memory_chat_id, text, reply)
+    return True
+
+
+def _is_newsletter_signup_message(text: str) -> bool:
+    lowered = text.lower()
+    newsletter_markers = ["bülten", "bulten", "newsletter", "mail listesi", "eposta listesi", "e-posta listesi"]
+    signup_markers = ["kayıt", "kayit", "kaydol", "abone", "üye", "uye", "subscribe"]
+    return any(marker in lowered for marker in newsletter_markers) and any(marker in lowered for marker in signup_markers)
+
+
+def _is_newsletter_followup(agent: EconomyAgent, chat_id: str | None) -> bool:
+    memory = getattr(agent, "memory", None)
+    snapshot = getattr(memory, "snapshot", None)
+    if not callable(snapshot):
+        return False
+    for previous in reversed(snapshot(chat_id)[-4:]):
+        if getattr(previous, "role", None) == "model" and _asks_for_newsletter_contact(getattr(previous, "text", "")):
+            return True
+    return False
+
+
+def _asks_for_newsletter_contact(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in ["bülten", "bulten"]) and any(
+        marker in lowered for marker in ["e-posta", "eposta", "email", "adınızı", "adinizi"]
+    )
+
+
+def _extract_email(text: str) -> str | None:
+    match = re.search(r"[\w.+%-]+@[\w.-]+\.[A-Za-z]{2,}", text)
+    return match.group(0).lower() if match else None
+
+
+def _extract_newsletter_name(text: str, email: str | None) -> str | None:
+    candidate = text
+    if email:
+        candidate = candidate.replace(email, " ")
+    candidate = re.sub(r"\b(e-?posta(?:m| adresim)?|email(?:im)?|mail(?:im)?|adresim|ad[ıi]m|ismim)\b", " ", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\b(b[üu]lten(?:inize|e)?|kay[ıi]t|kaydolmak|istiyorum|abone|olmak|olay[ıi]m|beni|l[üu]tfen)\b", " ", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"[^A-Za-zÇĞİÖŞÜçğıöşü\s'-]", " ", candidate)
+    words = [word.strip(" '-") for word in candidate.split() if word.strip(" '-")]
+    if len(words) < 2:
+        return None
+    return " ".join(words[:4])
+
+
+def _remember_agent_exchange(agent: EconomyAgent, chat_id: str | None, user_text: str, reply_text: str) -> None:
+    memory = getattr(agent, "memory", None)
+    remember = getattr(memory, "remember_exchange", None)
+    if callable(remember):
+        remember(chat_id, user_text, reply_text)
 
 
 def _handle_legacy_media_request(

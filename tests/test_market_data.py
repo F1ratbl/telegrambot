@@ -285,6 +285,30 @@ class _FakeMediaInterpreterAgent(_FakeAgent):
         return self.payload
 
 
+class _FakeNewsletterAgent(_FakeAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.memory = InMemoryConversationMemory()
+        self.subscriptions: list[dict] = []
+
+    def subscribe_newsletter(
+        self,
+        full_name: str,
+        email: str,
+        consent_text: str = "",
+        chat_id: str | None = None,
+    ) -> dict:
+        self.subscriptions.append(
+            {
+                "full_name": full_name,
+                "email": email,
+                "consent_text": consent_text,
+                "chat_id": chat_id,
+            }
+        )
+        return {"status": "ok", "full_name": full_name, "email": email}
+
+
 class _FakeVisualGenerator:
     def parse_request(self, text: str):
         return text if "infografik" in text.lower() else None
@@ -765,6 +789,72 @@ def test_newsletter_tool_validates_email_before_posting(monkeypatch) -> None:
     assert result["status"] == "missing_fields"
     assert result["missing"] == ["email"]
     assert calls == []
+
+
+def test_webhook_newsletter_signup_collects_fields_then_subscribes() -> None:
+    agent = _FakeNewsletterAgent()
+    telegram = _FakeTelegram()
+
+    first = _handle_update(
+        {
+            "message": {
+                "message_id": 20,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "Bülteninize kayıt olmak istiyorum",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+    second = _handle_update(
+        {
+            "message": {
+                "message_id": 21,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "Mehmet Şimşek, mhmtsmsk@example.com",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+
+    assert first is True
+    assert second is True
+    assert "tam adınızı" in telegram.messages[0]["text"]
+    assert agent.subscriptions == [
+        {
+            "full_name": "Mehmet Şimşek",
+            "email": "mhmtsmsk@example.com",
+            "consent_text": "Mehmet Şimşek, mhmtsmsk@example.com",
+            "chat_id": "123:456",
+        }
+    ]
+    assert telegram.messages[1]["text"] == "Harika Mehmet, bültenimize hoş geldin! Kaydın tamamlandı."
+
+
+def test_webhook_newsletter_signup_handles_single_message_with_details() -> None:
+    agent = _FakeNewsletterAgent()
+    telegram = _FakeTelegram()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 22,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "Bülteninize kayıt olmak istiyorum. Adım Fırat Özkan, emailim firat@example.com",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.subscriptions[0]["full_name"] == "Fırat Özkan"
+    assert agent.subscriptions[0]["email"] == "firat@example.com"
+    assert telegram.messages[0]["text"] == "Harika Fırat, bültenimize hoş geldin! Kaydın tamamlandı."
 
 
 def test_price_chart_fetches_twelve_data_ohlc_and_caches(monkeypatch) -> None:
