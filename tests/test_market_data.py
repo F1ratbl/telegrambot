@@ -869,6 +869,44 @@ def test_webhook_newsletter_followup_question_after_info_goes_to_agent() -> None
     assert telegram.messages[0]["text"] == "cevap: sadece bunları mı içeriyor, yoksa içinde menemen tarifi de var mı"
 
 
+def test_webhook_newsletter_details_after_llm_signup_context_subscribes() -> None:
+    agent = _FakeNewsletterAgent()
+    telegram = _FakeTelegram()
+    agent.memory.remember_exchange(
+        "123:456",
+        "emailimi vermek için size güvenebilir miyim",
+        (
+            "E-posta adresiniz sadece bülten göndermek amacıyla kullanılacak. "
+            "Adınız ve e-posta adresinizle kaydınızı tamamlayabiliriz."
+        ),
+    )
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 26,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "burak ucun, burakucn@example.com",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert agent.subscriptions == [
+        {
+            "full_name": "burak ucun",
+            "email": "burakucn@example.com",
+            "consent_text": "burak ucun, burakucn@example.com",
+            "chat_id": "123:456",
+        }
+    ]
+    assert telegram.messages[0]["text"] == "Harika burak, bültenimize hoş geldin! Kaydın tamamlandı."
+
+
 def test_webhook_newsletter_signup_collects_fields_then_subscribes() -> None:
     agent = _FakeNewsletterAgent()
     telegram = _FakeTelegram()

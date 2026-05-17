@@ -147,15 +147,16 @@ def _handle_newsletter_request(
     agent: EconomyAgent,
 ) -> bool:
     memory_chat_id = _memory_chat_id(message, chat_id)
-    is_signup_start = _is_newsletter_signup_message(text)
-    is_signup_followup = _is_newsletter_followup(agent, memory_chat_id)
-    if not is_signup_start and not is_signup_followup:
-        return False
-    if is_signup_followup and not is_signup_start and _looks_like_newsletter_question(text):
-        return False
-
     email = _extract_email(text)
     full_name = _extract_newsletter_name(text, email)
+    is_signup_start = _is_newsletter_signup_message(text)
+    is_signup_followup = _is_newsletter_followup(agent, memory_chat_id)
+    is_signup_details_followup = bool(email and full_name) and _is_newsletter_signup_details_followup(agent, memory_chat_id)
+    if not is_signup_start and not is_signup_followup and not is_signup_details_followup:
+        return False
+    if (is_signup_followup or is_signup_details_followup) and not is_signup_start and _looks_like_newsletter_question(text):
+        return False
+
     if not email or not full_name:
         reply = _NEWSLETTER_CONTACT_PROMPT
         telegram.send_message(
@@ -235,6 +236,54 @@ def _is_newsletter_followup(agent: EconomyAgent, chat_id: str | None) -> bool:
         if getattr(previous, "role", None) == "model" and _asks_for_newsletter_contact(getattr(previous, "text", "")):
             return True
     return False
+
+
+def _is_newsletter_signup_details_followup(agent: EconomyAgent, chat_id: str | None) -> bool:
+    memory = getattr(agent, "memory", None)
+    snapshot = getattr(memory, "snapshot", None)
+    if not callable(snapshot):
+        return False
+    recent = snapshot(chat_id)[-8:]
+    if not any(
+        _mentions_newsletter(getattr(previous, "text", "").lower())
+        for previous in recent
+    ):
+        return False
+    return any(
+        getattr(previous, "role", None) == "model" and _offers_newsletter_signup(getattr(previous, "text", ""))
+        for previous in recent
+    )
+
+
+def _offers_newsletter_signup(text: str) -> bool:
+    lowered = text.lower()
+    has_signup_language = any(
+        marker in lowered
+        for marker in [
+            "kaydol",
+            "kayıt",
+            "kayit",
+            "kaydinizi",
+            "kaydınızı",
+            "abone",
+            "liste",
+            "ekleyebiliriz",
+            "tamamlayabiliriz",
+        ]
+    )
+    has_contact_language = any(
+        marker in lowered
+        for marker in [
+            "adınız",
+            "adiniz",
+            "ad soyad",
+            "soyad",
+            "e-posta",
+            "eposta",
+            "email",
+        ]
+    )
+    return has_signup_language and has_contact_language
 
 
 def _asks_for_newsletter_contact(text: str) -> bool:
