@@ -23,6 +23,7 @@ GEMINI_MODEL=gemini-2.5-flash
 REPLICATE_API_TOKEN=...
 REPLICATE_IMAGE_MODEL=black-forest-labs/flux-2-pro
 REPLICATE_IMAGE_ENABLED=true
+ZAPIER_NEWSLETTER_WEBHOOK_URL=https://hooks.zapier.com/hooks/catch/...
 QDRANT_URL=https://...qdrant.tech
 QDRANT_API_KEY=...
 QDRANT_COLLECTION=economy_knowledge
@@ -31,6 +32,12 @@ QDRANT_COLLECTION=economy_knowledge
 Gorsel uretimi icin Replicate etkinse bot once `REPLICATE_IMAGE_MODEL`
 modelini dener. Basarisiz olursa Hugging Face/Google ve en sonda yerel
 infografik fallback akisi devreye girer.
+
+Bulten kaydi icin Zapier'de `Webhooks by Zapier` -> `Catch Hook` tetikleyicisi
+olusturup webhook URL'sini `ZAPIER_NEWSLETTER_WEBHOOK_URL` olarak ekleyin. Zap'in
+aksiyonunda Google Sheets `Create Spreadsheet Row` secilip `full_name`, `email`,
+`consent_text`, `source`, `chat_id` ve `created_at` alanlari tablo kolonlarina
+maplenebilir.
 
 ## Lokal Calistirma
 

@@ -4,7 +4,7 @@ import logging
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -47,6 +47,8 @@ class EconomyAgent:
         self.memory = memory
         self.news_search = news_search or NewsSearchClient(settings)
         self._client = None
+        self._media_interpretation_disabled_until = 0.0
+        self._chart_interpretation_disabled_until = 0.0
 
     def reply(self, user_message: str, chat_id: str | None = None, user_name: str | None = None) -> str:
         if not user_message.strip():
@@ -111,7 +113,7 @@ class EconomyAgent:
             contents.append(response.candidates[0].content)
             response_parts = []
             for function_call in function_calls:
-                tool_result = self._execute_tool(function_call)
+                tool_result = self._execute_tool(function_call, chat_id=chat_id)
                 response_parts.append(self._function_response_part(types, function_call, tool_result))
             contents.append(types.Content(role="user", parts=response_parts))
 
@@ -154,6 +156,8 @@ class EconomyAgent:
     def interpret_chart_request(self, user_message: str, chat_id: str | None = None) -> dict[str, Any] | None:
         if not user_message.strip() or not self.settings.google_api_key:
             return None
+        if time.monotonic() < self._chart_interpretation_disabled_until:
+            return None
 
         try:
             from google import genai
@@ -168,6 +172,10 @@ class EconomyAgent:
                 config=self._build_chart_interpretation_config(types),
             )
             return self._parse_chart_interpretation(self._extract_text_or_none(response))
+        except GeminiTemporarilyUnavailableError as exc:
+            self._chart_interpretation_disabled_until = time.monotonic() + 60
+            logger.warning("Gemini chart request interpretation temporarily unavailable: %s", exc)
+            return None
         except Exception:
             logger.exception("Gemini chart request interpretation failed.")
             return None
@@ -181,6 +189,8 @@ class EconomyAgent:
     ) -> dict[str, Any] | None:
         if not user_message.strip() or not self.settings.google_api_key:
             return None
+        if time.monotonic() < self._media_interpretation_disabled_until:
+            return {"intent": "unavailable"}
 
         try:
             from google import genai
@@ -202,6 +212,10 @@ class EconomyAgent:
                 config=self._build_media_interpretation_config(types),
             )
             return self._parse_media_interpretation(self._extract_text_or_none(response))
+        except GeminiTemporarilyUnavailableError as exc:
+            self._media_interpretation_disabled_until = time.monotonic() + 60
+            logger.warning("Gemini media request interpretation temporarily unavailable: %s", exc)
+            return {"intent": "unavailable"}
         except Exception:
             logger.exception("Gemini media request interpretation failed.")
             return None
@@ -1103,7 +1117,7 @@ class EconomyAgent:
                 return quote
         return None
 
-    def _execute_tool(self, function_call: Any) -> dict[str, Any]:
+    def _execute_tool(self, function_call: Any, chat_id: str | None = None) -> dict[str, Any]:
         name = getattr(function_call, "name", "")
         args = dict(getattr(function_call, "args", {}) or {})
         try:
@@ -1114,10 +1128,55 @@ class EconomyAgent:
                     query=str(args.get("query", "")),
                     limit=args.get("limit"),
                 )
+            if name == "subscribe_newsletter":
+                return self._subscribe_newsletter(args, chat_id=chat_id)
             return {"status": "error", "message": f"Unknown tool: {name}"}
         except Exception as exc:
             logger.exception("Tool execution failed: %s", name)
             return {"status": "error", "message": str(exc), "tool": name}
+
+    def _subscribe_newsletter(self, args: dict[str, Any], chat_id: str | None) -> dict[str, Any]:
+        full_name = str(args.get("full_name") or "").strip()
+        email = str(args.get("email") or "").strip().lower()
+        consent_text = str(args.get("consent_text") or "").strip()
+        if not full_name:
+            return {"status": "missing_fields", "message": "Ad soyad eksik.", "missing": ["full_name"]}
+        if not _looks_like_email(email):
+            return {"status": "missing_fields", "message": "Gecerli email adresi eksik.", "missing": ["email"]}
+        webhook_url = self.settings.zapier_newsletter_webhook_url
+        if not webhook_url:
+            return {
+                "status": "not_configured",
+                "message": "ZAPIER_NEWSLETTER_WEBHOOK_URL ortam degiskeni tanimli degil.",
+            }
+
+        import requests
+
+        payload = {
+            "full_name": full_name,
+            "email": email,
+            "consent_text": consent_text,
+            "source": "telegram",
+            "chat_id": chat_id,
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        }
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            timeout=max(3.0, self.settings.request_timeout_seconds),
+        )
+        if response.status_code >= 400:
+            return {
+                "status": "error",
+                "message": f"Zapier webhook {response.status_code} dondu.",
+                "provider": "zapier",
+            }
+        return {
+            "status": "ok",
+            "message": "Bulten kaydi Zapier endpointine gonderildi.",
+            "email": email,
+            "full_name": full_name,
+        }
 
     def _function_response_part(self, types: Any, function_call: Any, result: dict[str, Any]) -> Any:
         kwargs: dict[str, Any] = {
@@ -1138,3 +1197,7 @@ def _first_numeric_value(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+def _looks_like_email(value: str) -> bool:
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value.strip()))

@@ -15,6 +15,7 @@ from src.tools.visual_generation import EconomyVisualGenerator
 
 logger = logging.getLogger(__name__)
 _MEDIA_INTERPRETATION_UNAVAILABLE = object()
+_MEDIA_INTERPRETATION_SKIPPED = object()
 
 
 def create_telegram_blueprint(
@@ -101,13 +102,15 @@ def _handle_update(
     if not isinstance(text, str) or not text.strip():
         return False
 
-    media_payload = (
-        _interpret_media_request(agent, text, message, chat_id, visual_generator)
-        if price_chart or visual_generator
-        else _MEDIA_INTERPRETATION_UNAVAILABLE
-    )
-    if media_payload is not _MEDIA_INTERPRETATION_UNAVAILABLE:
-        if isinstance(media_payload, dict) and _handle_interpreted_media_request(
+    media_payload = _media_interpretation_payload(agent, text, message, chat_id, price_chart, visual_generator)
+    if media_payload is _MEDIA_INTERPRETATION_UNAVAILABLE:
+        if _handle_legacy_media_request(text, message, chat_id, telegram, price_chart, visual_generator, agent):
+            return True
+    elif media_payload is not _MEDIA_INTERPRETATION_SKIPPED:
+        if isinstance(media_payload, dict) and _media_intent(media_payload) == "unavailable":
+            if _handle_legacy_media_request(text, message, chat_id, telegram, price_chart, visual_generator, agent):
+                return True
+        elif isinstance(media_payload, dict) and _handle_interpreted_media_request(
             media_payload,
             text,
             message,
@@ -116,12 +119,6 @@ def _handle_update(
             price_chart,
             visual_generator,
         ):
-            return True
-    else:
-        if price_chart and _handle_price_chart_request(text, message, chat_id, telegram, price_chart, agent):
-            return True
-
-        if visual_generator and _handle_visual_request(text, message, chat_id, telegram, visual_generator):
             return True
 
     reply = agent.reply(
@@ -134,6 +131,22 @@ def _handle_update(
         reply_to_message_id=message.get("message_id"),
     )
     return True
+
+
+def _handle_legacy_media_request(
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+    telegram: TelegramClient,
+    price_chart: PriceChartTool | None,
+    visual_generator: EconomyVisualGenerator | None,
+    agent: EconomyAgent,
+) -> bool:
+    if price_chart and _handle_price_chart_request(text, message, chat_id, telegram, price_chart, agent):
+        return True
+    if visual_generator and _handle_visual_request(text, message, chat_id, telegram, visual_generator):
+        return True
+    return False
 
 
 def _handle_price_chart_request(
@@ -175,6 +188,83 @@ def _send_price_chart(
             reply_to_message_id=message.get("message_id"),
         )
     return True
+
+
+def _media_interpretation_payload(
+    agent: EconomyAgent,
+    text: str,
+    message: dict[str, Any],
+    chat_id: int | str,
+    price_chart: PriceChartTool | None,
+    visual_generator: EconomyVisualGenerator | None,
+) -> dict[str, Any] | object | None:
+    if not price_chart and not visual_generator:
+        return _MEDIA_INTERPRETATION_SKIPPED
+    if not _media_interpreter_available(agent):
+        return _MEDIA_INTERPRETATION_UNAVAILABLE
+
+    visual_chat_id = _memory_chat_id(message, chat_id)
+    if not _should_interpret_media_request(text, message, visual_generator, visual_chat_id):
+        return _MEDIA_INTERPRETATION_SKIPPED
+
+    return _interpret_media_request(agent, text, message, chat_id, visual_generator)
+
+
+def _media_interpreter_available(agent: EconomyAgent) -> bool:
+    interpreter = getattr(agent, "interpret_media_request", None)
+    if not callable(interpreter):
+        return False
+    settings = getattr(agent, "settings", None)
+    return settings is None or bool(getattr(settings, "google_api_key", None))
+
+
+def _should_interpret_media_request(
+    text: str,
+    message: dict[str, Any],
+    visual_generator: EconomyVisualGenerator | None,
+    visual_chat_id: str | None,
+) -> bool:
+    if _largest_photo_file_id(message):
+        return True
+    if _has_media_language(text):
+        return True
+    if visual_generator and _has_visual_context(visual_generator, visual_chat_id):
+        return _is_visual_followup(visual_generator, text)
+    return False
+
+
+def _has_media_language(text: str) -> bool:
+    lowered = text.lower()
+    media_markers = [
+        "grafik",
+        "grafiği",
+        "grafigi",
+        "chart",
+        "mum",
+        "candle",
+        "candlestick",
+        "görsel",
+        "gorsel",
+        "resim",
+        "foto",
+        "fotoğraf",
+        "fotograf",
+        "image",
+        "picture",
+        "infografik",
+        "şema",
+        "sema",
+        "poster",
+        "kapak",
+        "dergi",
+        "illustration",
+        "ilüstrasyon",
+        "ilustrasyon",
+        "çiz",
+        "ciz",
+        "draw",
+    ]
+    return any(marker in lowered for marker in media_markers)
 
 
 def _interpret_media_request(

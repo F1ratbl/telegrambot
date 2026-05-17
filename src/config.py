@@ -120,6 +120,8 @@ class Settings:
     news_max_items: int = 5
     news_move_threshold_percent: float = 2.0
 
+    zapier_newsletter_webhook_url: str | None = None
+
     memory_max_messages: int = 10
     memory_ttl_seconds: int = 60 * 60 * 6
     timezone: str = "Europe/Istanbul"
@@ -177,6 +179,10 @@ class Settings:
             chart_cache_ttl_seconds=_int(env, "CHART_CACHE_TTL_SECONDS", 300),
             news_max_items=_int(env, "NEWS_MAX_ITEMS", 5),
             news_move_threshold_percent=_float(env, "NEWS_MOVE_THRESHOLD_PERCENT", 2.0),
+            zapier_newsletter_webhook_url=(
+                _optional(env.get("ZAPIER_NEWSLETTER_WEBHOOK_URL"))
+                or _optional(env.get("NEWSLETTER_WEBHOOK_URL"))
+            ),
             memory_max_messages=_int(env, "MEMORY_MAX_MESSAGES", 10),
             memory_ttl_seconds=_int(env, "MEMORY_TTL_SECONDS", 60 * 60 * 6),
             timezone=_optional(env.get("APP_TIMEZONE")) or "Europe/Istanbul",

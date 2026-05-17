@@ -89,6 +89,12 @@ class _FakeGeminiClient:
         self.models = _RecordingGeminiModels(reply)
 
 
+class _FakeFunctionCall:
+    def __init__(self, name: str, args: dict) -> None:
+        self.name = name
+        self.args = args
+
+
 class _FailingImageModels:
     def generate_images(self, model, prompt, config):
         raise RuntimeError("429 RESOURCE_EXHAUSTED")
@@ -617,6 +623,54 @@ def test_webhook_media_interpreter_none_prevents_legacy_marker_catch() -> None:
     assert telegram.messages[0]["text"] == "cevap: altin son 1 ay grafik çiz"
 
 
+def test_webhook_skips_media_interpreter_for_plain_chat() -> None:
+    agent = _FakeMediaInterpreterAgent({"intent": "visual"})
+    telegram = _FakeTelegram()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 18,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "merhaba nasılsın",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        price_chart=_FakeChartTool(),  # type: ignore[arg-type]
+        visual_generator=_FakeVisualGenerator(),  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.media_requests == []
+    assert agent.messages == ["merhaba nasılsın"]
+    assert telegram.photos == []
+
+
+def test_webhook_media_interpreter_unavailable_uses_legacy_fallback() -> None:
+    agent = _FakeMediaInterpreterAgent({"intent": "unavailable"})
+    telegram = _FakeTelegram()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 19,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "altin son 1 ay grafik çiz",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        price_chart=_FakeChartTool(),  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.messages == []
+    assert telegram.photos[0]["image"] == b"chart-bytes"
+
+
 def test_price_chart_builds_request_from_model_interpretation() -> None:
     tool = PriceChartTool(Settings())
 
@@ -647,6 +701,70 @@ def test_settings_loads_ohlc_provider_keys() -> None:
     assert settings.finnhub_api_key == "fh_key"
     assert settings.alpha_vantage_api_key == "av_key"
     assert settings.chart_cache_ttl_seconds == 120
+
+
+def test_settings_loads_zapier_newsletter_webhook_url() -> None:
+    settings = Settings.from_env({"ZAPIER_NEWSLETTER_WEBHOOK_URL": "https://hooks.zapier.com/hooks/catch/1/abc"})
+
+    assert settings.zapier_newsletter_webhook_url == "https://hooks.zapier.com/hooks/catch/1/abc"
+
+
+def test_newsletter_tool_posts_signup_to_zapier(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return _FakeHttpResponse(200, data={"ok": True})
+
+    monkeypatch.setattr("requests.post", fake_post)
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(
+        Settings(zapier_newsletter_webhook_url="https://hooks.zapier.com/hooks/catch/1/abc"),
+        _DummyTool(),
+        _DummyTool(),
+        memory,
+    )
+
+    result = agent._execute_tool(
+        _FakeFunctionCall(
+            "subscribe_newsletter",
+            {
+                "full_name": "Firat Ozkan",
+                "email": "FIRAT@example.com",
+                "consent_text": "bülteninize kayıt olmak istiyorum",
+            },
+        ),
+        chat_id="123:456",
+    )
+
+    assert result["status"] == "ok"
+    assert result["email"] == "firat@example.com"
+    assert calls[0]["url"] == "https://hooks.zapier.com/hooks/catch/1/abc"
+    assert calls[0]["json"]["full_name"] == "Firat Ozkan"
+    assert calls[0]["json"]["email"] == "firat@example.com"
+    assert calls[0]["json"]["source"] == "telegram"
+    assert calls[0]["json"]["chat_id"] == "123:456"
+
+
+def test_newsletter_tool_validates_email_before_posting(monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr("requests.post", lambda *args, **kwargs: calls.append({"args": args, **kwargs}))
+    memory = InMemoryConversationMemory()
+    agent = EconomyAgent(
+        Settings(zapier_newsletter_webhook_url="https://hooks.zapier.com/hooks/catch/1/abc"),
+        _DummyTool(),
+        _DummyTool(),
+        memory,
+    )
+
+    result = agent._execute_tool(
+        _FakeFunctionCall("subscribe_newsletter", {"full_name": "Firat Ozkan", "email": "bad-email"}),
+        chat_id="123:456",
+    )
+
+    assert result["status"] == "missing_fields"
+    assert result["missing"] == ["email"]
+    assert calls == []
 
 
 def test_price_chart_fetches_twelve_data_ohlc_and_caches(monkeypatch) -> None:

@@ -46,7 +46,36 @@ KNOWLEDGE_BASE_TOOL_DECLARATION = {
 }
 
 
+NEWSLETTER_SIGNUP_TOOL_DECLARATION = {
+    "name": "subscribe_newsletter",
+    "description": (
+        "Register a user for the newsletter after they explicitly ask to subscribe "
+        "and provide both their full name and email address. Do not call this tool "
+        "until both fields are known; ask a short follow-up question for missing fields."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "full_name": {
+                "type": "string",
+                "description": "The subscriber's first and last name as provided by the user.",
+            },
+            "email": {
+                "type": "string",
+                "description": "The subscriber's email address.",
+            },
+            "consent_text": {
+                "type": "string",
+                "description": "The user's opt-in wording or a short summary of their consent.",
+            },
+        },
+        "required": ["full_name", "email"],
+    },
+}
+
+
 FUNCTION_DECLARATIONS = [
     MARKET_TOOL_DECLARATION,
     KNOWLEDGE_BASE_TOOL_DECLARATION,
+    NEWSLETTER_SIGNUP_TOOL_DECLARATION,
 ]
