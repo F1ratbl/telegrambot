@@ -103,7 +103,7 @@ def _handle_update(
     if not isinstance(text, str) or not text.strip():
         return False
 
-    if _handle_newsletter_signup_request(text, message, chat_id, telegram, agent):
+    if _handle_newsletter_request(text, message, chat_id, telegram, agent):
         return True
 
     media_payload = _media_interpretation_payload(agent, text, message, chat_id, price_chart, visual_generator)
@@ -137,7 +137,7 @@ def _handle_update(
     return True
 
 
-def _handle_newsletter_signup_request(
+def _handle_newsletter_request(
     text: str,
     message: dict[str, Any],
     chat_id: int | str,
@@ -147,6 +147,16 @@ def _handle_newsletter_signup_request(
     memory_chat_id = _memory_chat_id(message, chat_id)
     is_signup_start = _is_newsletter_signup_message(text)
     is_signup_followup = _is_newsletter_followup(agent, memory_chat_id)
+    if not is_signup_start and not is_signup_followup and _is_newsletter_info_message(text):
+        reply = _newsletter_info_response(text)
+        telegram.send_message(
+            chat_id=chat_id,
+            text=reply,
+            reply_to_message_id=message.get("message_id"),
+        )
+        _remember_agent_exchange(agent, memory_chat_id, text, reply)
+        return True
+
     if not is_signup_start and not is_signup_followup:
         return False
 
@@ -192,9 +202,95 @@ def _handle_newsletter_signup_request(
 
 def _is_newsletter_signup_message(text: str) -> bool:
     lowered = text.lower()
+    if not _mentions_newsletter(lowered):
+        return False
+    signup_markers = [
+        "kayıt olmak istiyorum",
+        "kayit olmak istiyorum",
+        "kaydolmak istiyorum",
+        "kayıt olayım",
+        "kayit olayim",
+        "abone olmak istiyorum",
+        "abone olayım",
+        "abone olayim",
+        "abone olacağım",
+        "abone olacagim",
+        "üye olmak istiyorum",
+        "uye olmak istiyorum",
+        "beni kaydet",
+        "beni ekle",
+        "ekler misin",
+        "listeye ekle",
+        "subscribe",
+        "sign me up",
+    ]
+    return any(marker in lowered for marker in signup_markers)
+
+
+def _is_newsletter_info_message(text: str) -> bool:
+    lowered = text.lower()
+    if not _mentions_newsletter(lowered):
+        return False
+    info_markers = [
+        "bilgi",
+        "detay",
+        "anlat",
+        "bahset",
+        "hakkında",
+        "hakkinda",
+        "nedir",
+        "ne işe yarar",
+        "ne ise yarar",
+        "ne var",
+        "neler var",
+        "içerik",
+        "icerik",
+        "konu",
+        "sıklık",
+        "siklik",
+        "ne zaman",
+        "hangi gün",
+        "hangi gun",
+        "ücret",
+        "ucret",
+        "fiyat",
+        "ücretsiz",
+        "ucretsiz",
+        "iptal",
+        "çık",
+        "cik",
+        "gizlilik",
+        "veri",
+        "email",
+        "e-posta",
+        "eposta",
+        "nasıl",
+        "nasil",
+    ]
+    return any(marker in lowered for marker in info_markers)
+
+
+def _mentions_newsletter(lowered: str) -> bool:
     newsletter_markers = ["bülten", "bulten", "newsletter", "mail listesi", "eposta listesi", "e-posta listesi"]
-    signup_markers = ["kayıt", "kayit", "kaydol", "abone", "üye", "uye", "subscribe"]
-    return any(marker in lowered for marker in newsletter_markers) and any(marker in lowered for marker in signup_markers)
+    return any(marker in lowered for marker in newsletter_markers)
+
+
+def _newsletter_info_response(text: str) -> str:
+    lowered = text.lower()
+    if any(marker in lowered for marker in ["ücret", "ucret", "fiyat", "ücretsiz", "ucretsiz"]):
+        return "Bülten ücretsizdir. Ekonomi gündemi, piyasa özeti ve önemli veri takvimi gibi başlıkları sade bir dille paylaşmak için hazırlanır."
+    if any(marker in lowered for marker in ["iptal", "çık", "cik", "abonelikten"]):
+        return "Bültenden çıkmak istediğinizde bunu yazmanız yeterli; abonelik kaydınız kaldırılabilir. Şimdilik kayıt için yalnızca ad soyad ve e-posta alıyoruz."
+    if any(marker in lowered for marker in ["gizlilik", "veri", "email", "e-posta", "eposta"]):
+        return "Bülten kaydı için ad soyad ve e-posta adresinizi alıyoruz. Bu bilgiler bülten gönderimi ve kayıt takibi için kullanılır; yatırım tavsiyesi ya da kişisel portföy takibi amacıyla kullanılmaz."
+    if any(marker in lowered for marker in ["sıklık", "siklik", "ne zaman", "hangi gün", "hangi gun"]):
+        return "Bülten düzenli ekonomi özeti mantığında tasarlandı: önemli piyasa gelişmeleri, makro veri gündemi ve öne çıkan risk başlıkları kısa ve okunabilir şekilde paylaşılır."
+    return (
+        "Bültenimiz ekonomi ve finans gündemini kısa, anlaşılır ve uygulanabilir şekilde takip etmek isteyenler için hazırlanır. "
+        "İçerikte piyasa özeti, önemli makro veriler, merkez bankası gündemi, altın-döviz-kripto gibi başlıklarda genel görünüm, "
+        "öne çıkan haberlerin olası etkileri ve haftalık takip listesi yer alabilir. Kesin yatırım tavsiyesi vermez; amaç gündemi daha hızlı anlamanıza yardımcı olmaktır. "
+        "Kayıt olmak isterseniz tam adınızı ve e-posta adresinizi paylaşmanız yeterli."
+    )
 
 
 def _is_newsletter_followup(agent: EconomyAgent, chat_id: str | None) -> bool:

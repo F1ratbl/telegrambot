@@ -791,6 +791,51 @@ def test_newsletter_tool_validates_email_before_posting(monkeypatch) -> None:
     assert calls == []
 
 
+def test_webhook_newsletter_info_question_does_not_start_signup() -> None:
+    agent = _FakeNewsletterAgent()
+    telegram = _FakeTelegram()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 23,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "bülteniniz hakkında bilgi alabilir miyim",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.subscriptions == []
+    assert "piyasa özeti" in telegram.messages[0]["text"]
+    assert "Kayıt olmak isterseniz" in telegram.messages[0]["text"]
+
+
+def test_webhook_newsletter_answers_pricing_question() -> None:
+    agent = _FakeNewsletterAgent()
+    telegram = _FakeTelegram()
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 24,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "bülten ücretli mi",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.subscriptions == []
+    assert "ücretsizdir" in telegram.messages[0]["text"]
+
+
 def test_webhook_newsletter_signup_collects_fields_then_subscribes() -> None:
     agent = _FakeNewsletterAgent()
     telegram = _FakeTelegram()
