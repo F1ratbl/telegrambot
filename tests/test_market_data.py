@@ -791,7 +791,7 @@ def test_newsletter_tool_validates_email_before_posting(monkeypatch) -> None:
     assert calls == []
 
 
-def test_webhook_newsletter_info_question_does_not_start_signup() -> None:
+def test_webhook_newsletter_info_question_goes_to_agent() -> None:
     agent = _FakeNewsletterAgent()
     telegram = _FakeTelegram()
 
@@ -810,11 +810,11 @@ def test_webhook_newsletter_info_question_does_not_start_signup() -> None:
 
     assert handled is True
     assert agent.subscriptions == []
-    assert "piyasa özeti" in telegram.messages[0]["text"]
-    assert "Kayıt olmak isterseniz" in telegram.messages[0]["text"]
+    assert agent.messages == ["bülteniniz hakkında bilgi alabilir miyim"]
+    assert telegram.messages[0]["text"] == "cevap: bülteniniz hakkında bilgi alabilir miyim"
 
 
-def test_webhook_newsletter_answers_pricing_question() -> None:
+def test_webhook_newsletter_pricing_question_goes_to_agent() -> None:
     agent = _FakeNewsletterAgent()
     telegram = _FakeTelegram()
 
@@ -833,7 +833,40 @@ def test_webhook_newsletter_answers_pricing_question() -> None:
 
     assert handled is True
     assert agent.subscriptions == []
-    assert "ücretsizdir" in telegram.messages[0]["text"]
+    assert agent.messages == ["bülten ücretli mi"]
+    assert telegram.messages[0]["text"] == "cevap: bülten ücretli mi"
+
+
+def test_webhook_newsletter_followup_question_after_info_goes_to_agent() -> None:
+    agent = _FakeNewsletterAgent()
+    telegram = _FakeTelegram()
+    agent.memory.remember_exchange(
+        "123:456",
+        "merhaba bülteniniz varmış doğru mu?",
+        (
+            "Merhaba! Evet, ekonomi ve finans gündemini takip etmek isteyenler için "
+            "bir bültenimiz var. Bültenimize kaydolmak isterseniz adınızı, soyadınızı "
+            "ve e-posta adresinizi alabiliriz."
+        ),
+    )
+
+    handled = _handle_update(
+        {
+            "message": {
+                "message_id": 25,
+                "chat": {"id": 123},
+                "from": {"id": 456},
+                "text": "sadece bunları mı içeriyor, yoksa içinde menemen tarifi de var mı",
+            }
+        },
+        agent,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+    )
+
+    assert handled is True
+    assert agent.subscriptions == []
+    assert agent.messages == ["sadece bunları mı içeriyor, yoksa içinde menemen tarifi de var mı"]
+    assert telegram.messages[0]["text"] == "cevap: sadece bunları mı içeriyor, yoksa içinde menemen tarifi de var mı"
 
 
 def test_webhook_newsletter_signup_collects_fields_then_subscribes() -> None:

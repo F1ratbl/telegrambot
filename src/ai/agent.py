@@ -449,6 +449,8 @@ class EconomyAgent:
                 "Bu mesaj onceki konunun devami gibi gorunuyor. Onceki kullanici "
                 f"mesaji: {previous_user_message}"
             )
+        if self._is_newsletter_conversation(user_message, chat_id):
+            lines.append(self._newsletter_context_instruction())
         lines.append(f"Birincil cevap tercihi: {self._response_preference_hint(user_message)}")
         if market_snapshot is not None:
             lines.append(
@@ -459,6 +461,28 @@ class EconomyAgent:
             lines.append(json.dumps(self._compact_market_snapshot(market_snapshot), ensure_ascii=False))
         lines.append(f"Kullanici mesaji: {user_message}")
         return "\n".join(lines)
+
+    def _is_newsletter_conversation(self, user_message: str, chat_id: str | None) -> bool:
+        lowered = user_message.lower()
+        if any(marker in lowered for marker in ["bülten", "bulten", "newsletter", "mail listesi", "e-posta listesi", "eposta listesi"]):
+            return True
+        recent = self.memory.snapshot(chat_id)[-4:]
+        return any(
+            any(marker in message.text.lower() for marker in ["bülten", "bulten", "newsletter"])
+            for message in recent
+        )
+
+    def _newsletter_context_instruction(self) -> str:
+        return (
+            "Bulten baglami: Bu botun bulteni ekonomi ve finans gundemini kisa, anlasilir ve uygulanabilir sekilde takip etmek isteyenler icindir. "
+            "Icerik ornekleri: piyasa ozeti, makro veri takvimi, merkez bankasi gundemi, enflasyon/faiz/kur gelismeleri, altin-doviz-kripto genel gorunumu, "
+            "BIST ve global endekslerde one cikan basliklar, sirket/haber etkilerinin egitici yorumu, haftalik takip listesi, riskler ve terim aciklamalari. "
+            "Bulten ekonomi/finans disi icerikler, yemek tarifi, magazin veya spor yorumu icermez. "
+            "Bulten kesin yatirim tavsiyesi vermez; amaci gundemi hizli anlamaya yardim etmektir. Ucretsiz oldugunu soyleyebilirsin. "
+            "Kayit icin ad soyad ve e-posta gerekir; kullanici acikca kaydolmak istemedikce bilgi sorularinda kayit formuna zorlamadan sorusunu cevapla. "
+            "Bilgi cevaplarinin sonunda ad/e-posta isteme veya kayit formu acma. "
+            "Kullanici devam sorusu sorarsa onceki bulten baglamindan devam et."
+        )
 
     def _compact_market_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         quotes = []

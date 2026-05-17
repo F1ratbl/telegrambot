@@ -17,6 +17,8 @@ from src.tools.visual_generation import EconomyVisualGenerator
 logger = logging.getLogger(__name__)
 _MEDIA_INTERPRETATION_UNAVAILABLE = object()
 _MEDIA_INTERPRETATION_SKIPPED = object()
+_NEWSLETTER_CONTACT_PROMPT = "Harika! Bültenimize kaydolmak için tam adınızı ve e-posta adresinizi alabilir miyim?"
+_NEWSLETTER_MISSING_FIELDS_PROMPT = "Kaydı tamamlamak için tam adınızı ve geçerli e-posta adresinizi birlikte paylaşır mısınız?"
 
 
 def create_telegram_blueprint(
@@ -147,23 +149,15 @@ def _handle_newsletter_request(
     memory_chat_id = _memory_chat_id(message, chat_id)
     is_signup_start = _is_newsletter_signup_message(text)
     is_signup_followup = _is_newsletter_followup(agent, memory_chat_id)
-    if not is_signup_start and not is_signup_followup and _is_newsletter_info_message(text):
-        reply = _newsletter_info_response(text)
-        telegram.send_message(
-            chat_id=chat_id,
-            text=reply,
-            reply_to_message_id=message.get("message_id"),
-        )
-        _remember_agent_exchange(agent, memory_chat_id, text, reply)
-        return True
-
     if not is_signup_start and not is_signup_followup:
+        return False
+    if is_signup_followup and not is_signup_start and _looks_like_newsletter_question(text):
         return False
 
     email = _extract_email(text)
     full_name = _extract_newsletter_name(text, email)
     if not email or not full_name:
-        reply = "Harika! Bültenimize kaydolmak için tam adınızı ve e-posta adresinizi alabilir miyim?"
+        reply = _NEWSLETTER_CONTACT_PROMPT
         telegram.send_message(
             chat_id=chat_id,
             text=reply,
@@ -188,7 +182,7 @@ def _handle_newsletter_request(
     elif status == "not_configured":
         reply = "Bülten kaydını şu an tamamlayamıyorum; Zapier webhook ayarı production ortamında eksik görünüyor."
     elif status == "missing_fields":
-        reply = "Kaydı tamamlamak için tam adınızı ve geçerli e-posta adresinizi birlikte paylaşır mısınız?"
+        reply = _NEWSLETTER_MISSING_FIELDS_PROMPT
     else:
         reply = "Bülten kaydını Zapier'e gönderirken bir sorun oldu. Biraz sonra tekrar deneyebilir misiniz?"
     telegram.send_message(
@@ -227,70 +221,9 @@ def _is_newsletter_signup_message(text: str) -> bool:
     return any(marker in lowered for marker in signup_markers)
 
 
-def _is_newsletter_info_message(text: str) -> bool:
-    lowered = text.lower()
-    if not _mentions_newsletter(lowered):
-        return False
-    info_markers = [
-        "bilgi",
-        "detay",
-        "anlat",
-        "bahset",
-        "hakkında",
-        "hakkinda",
-        "nedir",
-        "ne işe yarar",
-        "ne ise yarar",
-        "ne var",
-        "neler var",
-        "içerik",
-        "icerik",
-        "konu",
-        "sıklık",
-        "siklik",
-        "ne zaman",
-        "hangi gün",
-        "hangi gun",
-        "ücret",
-        "ucret",
-        "fiyat",
-        "ücretsiz",
-        "ucretsiz",
-        "iptal",
-        "çık",
-        "cik",
-        "gizlilik",
-        "veri",
-        "email",
-        "e-posta",
-        "eposta",
-        "nasıl",
-        "nasil",
-    ]
-    return any(marker in lowered for marker in info_markers)
-
-
 def _mentions_newsletter(lowered: str) -> bool:
     newsletter_markers = ["bülten", "bulten", "newsletter", "mail listesi", "eposta listesi", "e-posta listesi"]
     return any(marker in lowered for marker in newsletter_markers)
-
-
-def _newsletter_info_response(text: str) -> str:
-    lowered = text.lower()
-    if any(marker in lowered for marker in ["ücret", "ucret", "fiyat", "ücretsiz", "ucretsiz"]):
-        return "Bülten ücretsizdir. Ekonomi gündemi, piyasa özeti ve önemli veri takvimi gibi başlıkları sade bir dille paylaşmak için hazırlanır."
-    if any(marker in lowered for marker in ["iptal", "çık", "cik", "abonelikten"]):
-        return "Bültenden çıkmak istediğinizde bunu yazmanız yeterli; abonelik kaydınız kaldırılabilir. Şimdilik kayıt için yalnızca ad soyad ve e-posta alıyoruz."
-    if any(marker in lowered for marker in ["gizlilik", "veri", "email", "e-posta", "eposta"]):
-        return "Bülten kaydı için ad soyad ve e-posta adresinizi alıyoruz. Bu bilgiler bülten gönderimi ve kayıt takibi için kullanılır; yatırım tavsiyesi ya da kişisel portföy takibi amacıyla kullanılmaz."
-    if any(marker in lowered for marker in ["sıklık", "siklik", "ne zaman", "hangi gün", "hangi gun"]):
-        return "Bülten düzenli ekonomi özeti mantığında tasarlandı: önemli piyasa gelişmeleri, makro veri gündemi ve öne çıkan risk başlıkları kısa ve okunabilir şekilde paylaşılır."
-    return (
-        "Bültenimiz ekonomi ve finans gündemini kısa, anlaşılır ve uygulanabilir şekilde takip etmek isteyenler için hazırlanır. "
-        "İçerikte piyasa özeti, önemli makro veriler, merkez bankası gündemi, altın-döviz-kripto gibi başlıklarda genel görünüm, "
-        "öne çıkan haberlerin olası etkileri ve haftalık takip listesi yer alabilir. Kesin yatırım tavsiyesi vermez; amaç gündemi daha hızlı anlamanıza yardımcı olmaktır. "
-        "Kayıt olmak isterseniz tam adınızı ve e-posta adresinizi paylaşmanız yeterli."
-    )
 
 
 def _is_newsletter_followup(agent: EconomyAgent, chat_id: str | None) -> bool:
@@ -305,10 +238,48 @@ def _is_newsletter_followup(agent: EconomyAgent, chat_id: str | None) -> bool:
 
 
 def _asks_for_newsletter_contact(text: str) -> bool:
+    normalized = _normalize_newsletter_prompt(text)
+    return normalized in {
+        _normalize_newsletter_prompt(_NEWSLETTER_CONTACT_PROMPT),
+        _normalize_newsletter_prompt(_NEWSLETTER_MISSING_FIELDS_PROMPT),
+    }
+
+
+def _normalize_newsletter_prompt(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _looks_like_newsletter_question(text: str) -> bool:
     lowered = text.lower()
-    return any(marker in lowered for marker in ["bülten", "bulten"]) and any(
-        marker in lowered for marker in ["e-posta", "eposta", "email", "adınızı", "adinizi"]
-    )
+    question_markers = [
+        "?",
+        " mi",
+        " mı",
+        " mu",
+        " mü",
+        "ne ",
+        "nedir",
+        "neler",
+        "nasıl",
+        "nasil",
+        "hangi",
+        "kaç",
+        "kac",
+        "içer",
+        "icer",
+        "var mı",
+        "var mi",
+        "ücret",
+        "ucret",
+        "fiyat",
+        "sıklık",
+        "siklik",
+        "gizlilik",
+        "iptal",
+        "dışında",
+        "disinda",
+    ]
+    return any(marker in lowered for marker in question_markers)
 
 
 def _extract_email(text: str) -> str | None:
